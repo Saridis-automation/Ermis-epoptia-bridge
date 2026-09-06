@@ -4,6 +4,7 @@ import subprocess
 import requests
 from dotenv import load_dotenv
 from mcp.server.mcpserver import MCPServer
+import codex_jobs
 
 # Load Epoptia credentials from .env
 load_dotenv()
@@ -228,6 +229,24 @@ def ermis_health() -> dict:
         "git": git,
         "local_mcp_port_listening": listening,
     }
+
+
+@mcp.tool()
+def ermis_codex_start(task: str) -> dict:
+    """Start one sandboxed coding job in the fixed Ermis project; returns immediately."""
+    return codex_jobs.start(task)
+
+
+@mcp.tool()
+def ermis_codex_status(job_id: str) -> dict:
+    """Read a Codex job's persistent state and exit information."""
+    return codex_jobs.status(job_id)
+
+
+@mcp.tool()
+def ermis_codex_logs(job_id: str, tail_lines: int = 100) -> dict:
+    """Read up to 500 safe progress lines; raw Codex text is withheld for secrecy."""
+    return codex_jobs.logs(job_id, tail_lines)
 
 
 if __name__ == "__main__":
