@@ -1,4 +1,6 @@
 import os
+import socket
+import subprocess
 import requests
 from dotenv import load_dotenv
 from mcp.server.mcpserver import MCPServer
@@ -138,6 +140,93 @@ def get_wol_status(wol_id: int) -> dict:
         "completed": completed,
         "in_progress": in_progress,
         "not_started": not_started
+    }
+
+
+PROJECT_DIR = "/home/ermis/projects/epoptia-bridge"
+ALLOWED_SERVICES = (
+    "ermis-epoptia-mcp.service",
+    "ermis-epoptia-tunnel.service",
+)
+
+
+@mcp.tool()
+def ermis_git_status() -> dict:
+    """Return branch and porcelain working-tree status without changing Git."""
+    try:
+        result = subprocess.run(
+            ["/usr/bin/git", "--no-optional-locks", "-C", PROJECT_DIR,
+             "status", "--porcelain=v1", "--branch", "--untracked-files=normal"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Git status timed out"}
+    except (OSError, UnicodeError):
+        return {"ok": False, "error": "Git status unavailable"}
+    if result.returncode != 0:
+        return {"ok": False, "error": "Git status failed"}
+    lines = result.stdout.splitlines()
+    if not lines or not lines[0].startswith("## "):
+        return {"ok": False, "error": "Unexpected Git status response"}
+    branch = lines[0][3:].split("...", 1)[0]
+    for prefix in ("No commits yet on ", "Initial commit on "):
+        if branch.startswith(prefix):
+            branch = branch[len(prefix):]
+    return {
+        "ok": True,
+        "branch": None if branch == "HEAD (no branch)" else branch,
+        "detached": branch == "HEAD (no branch)",
+        "clean": len(lines) == 1,
+        "working_tree": lines[1:],
+    }
+
+
+@mcp.tool()
+def ermis_service_status(service: str) -> dict:
+    """Read status for one of the two explicitly allowed Ermis services."""
+    if service not in ALLOWED_SERVICES:
+        return {"ok": False, "error": "Service is not allowed"}
+    try:
+        result = subprocess.run(
+            ["/usr/bin/systemctl", "show", service, "--no-pager",
+             "--property=LoadState,ActiveState,SubState,UnitFileState"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "service": service, "error": "Service status timed out"}
+    except (OSError, UnicodeError):
+        return {"ok": False, "service": service, "error": "Service status unavailable"}
+    if result.returncode != 0:
+        return {"ok": False, "service": service, "error": "Service status failed"}
+    fields = {}
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key in ("LoadState", "ActiveState", "SubState", "UnitFileState"):
+            fields[key] = value
+    if len(fields) != 4:
+        return {"ok": False, "service": service, "error": "Incomplete service status"}
+    return {"ok": True, "service": service, **fields}
+
+
+@mcp.tool()
+def ermis_health() -> dict:
+    """Return service, repository, and local TCP listener status."""
+    services = {service: ermis_service_status(service) for service in ALLOWED_SERVICES}
+    git = ermis_git_status()
+    try:
+        with socket.create_connection(("127.0.0.1", 8000), timeout=1):
+            listening = True
+    except OSError:
+        listening = False
+    return {
+        "healthy": listening and git["ok"] and all(
+            status.get("ok") and status.get("LoadState") == "loaded"
+            and status.get("ActiveState") == "active"
+            for status in services.values()
+        ),
+        "services": services,
+        "git": git,
+        "local_mcp_port_listening": listening,
     }
 
 
