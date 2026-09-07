@@ -1,10 +1,8 @@
 import os
-import socket
-import subprocess
 import requests
 from dotenv import load_dotenv
 from mcp.server.mcpserver import MCPServer
-import codex_jobs
+import epoptia_read
 
 # Load Epoptia credentials from .env
 load_dotenv()
@@ -17,7 +15,7 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# MCP Server
+# Business-only MCP surface. Infrastructure tools belong in ermis_system_server.py.
 mcp = MCPServer(
     "Epoptia MES",
     description="Read-only access to Epoptia MES production data",
@@ -78,12 +76,16 @@ def get_wol_status(wol_id: int) -> dict:
 
     Returns:
     - product description
+    - technical_details: normalized specifications, WOL/product source values,
+      descriptions/notes and bounded sanitized extra fields; WOL values win
     - client
     - production status
     - target date
     - completed production steps
     - steps currently in progress
     - steps not yet started
+    - progress: supplied routing completed-step percentage, independent of lifecycle;
+      active excludes paused, unknown steps earn no credit, no steps means null
     """
 
     wol = find_wol(wol_id)
@@ -99,7 +101,10 @@ def get_wol_status(wol_id: int) -> dict:
     in_progress = []
     not_started = []
 
-    for step in wol.get("erp_routing", []):
+    routing = wol.get("erp_routing")
+    for step in routing if isinstance(routing, list) else []:
+        if not isinstance(step, dict):
+            continue
 
         job_tag = step.get("job_tag")
 
@@ -140,113 +145,101 @@ def get_wol_status(wol_id: int) -> dict:
         ),
         "completed": completed,
         "in_progress": in_progress,
-        "not_started": not_started
+        "not_started": not_started,
+        "technical_details": epoptia_read.technical_details(wol),
+        "progress": epoptia_read.routing_progress(routing)
     }
 
 
-PROJECT_DIR = "/home/ermis/projects/epoptia-bridge"
-ALLOWED_SERVICES = (
-    "ermis-epoptia-mcp.service",
-    "ermis-epoptia-tunnel.service",
-)
-
-
-@mcp.tool()
-def ermis_git_status() -> dict:
-    """Return branch and porcelain working-tree status without changing Git."""
+def _read_query(query, **filters):
     try:
-        result = subprocess.run(
-            ["/usr/bin/git", "--no-optional-locks", "-C", PROJECT_DIR,
-             "status", "--porcelain=v1", "--branch", "--untracked-files=normal"],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "Git status timed out"}
-    except (OSError, UnicodeError):
-        return {"ok": False, "error": "Git status unavailable"}
-    if result.returncode != 0:
-        return {"ok": False, "error": "Git status failed"}
-    lines = result.stdout.splitlines()
-    if not lines or not lines[0].startswith("## "):
-        return {"ok": False, "error": "Unexpected Git status response"}
-    branch = lines[0][3:].split("...", 1)[0]
-    for prefix in ("No commits yet on ", "Initial commit on "):
-        if branch.startswith(prefix):
-            branch = branch[len(prefix):]
-    return {
-        "ok": True,
-        "branch": None if branch == "HEAD (no branch)" else branch,
-        "detached": branch == "HEAD (no branch)",
-        "clean": len(lines) == 1,
-        "working_tree": lines[1:],
-    }
+        # Validate query arguments before making any upstream request.
+        query([], **filters)
+        rows = epoptia_read.fetch_wols(BASE_URL, HEADERS)
+        return {"ok": True, **query(rows, **filters)}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except epoptia_read.ReadError:
+        return {"ok": False, "error": "Epoptia read unavailable"}
 
 
 @mcp.tool()
-def ermis_service_status(service: str) -> dict:
-    """Read status for one of the two explicitly allowed Ermis services."""
-    if service not in ALLOWED_SERVICES:
-        return {"ok": False, "error": "Service is not allowed"}
-    try:
-        result = subprocess.run(
-            ["/usr/bin/systemctl", "show", service, "--no-pager",
-             "--property=LoadState,ActiveState,SubState,UnitFileState"],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "service": service, "error": "Service status timed out"}
-    except (OSError, UnicodeError):
-        return {"ok": False, "service": service, "error": "Service status unavailable"}
-    if result.returncode != 0:
-        return {"ok": False, "service": service, "error": "Service status failed"}
-    fields = {}
-    for line in result.stdout.splitlines():
-        key, separator, value = line.partition("=")
-        if separator and key in ("LoadState", "ActiveState", "SubState", "UnitFileState"):
-            fields[key] = value
-    if len(fields) != 4:
-        return {"ok": False, "service": service, "error": "Incomplete service status"}
-    return {"ok": True, "service": service, **fields}
+def get_wol_details(wol_id: int) -> dict:
+    """Read technical details for one WOL (positive integer ID, e.g. 3168).
+
+    Returns description, client name, quantity, target_day, status/state and
+    embedded WOL/product dimensions, notes/remarks, custom fields and attributes.
+    Source paths retain upstream values/units; WOL specifications override product
+    defaults. Only the existing workorderlines read endpoint is used: absent
+    product data is not fetched separately or invented. Unsafe values are omitted;
+    missing metadata is null. Technical data is bounded to depth 8, 200 leaves,
+    50 entries/container and 2,000 characters/value, with truncation reported.
+    """
+    return _read_query(epoptia_read.wol_details, wol_id=wol_id)
 
 
 @mcp.tool()
-def ermis_health() -> dict:
-    """Return service, repository, and local TCP listener status."""
-    services = {service: ermis_service_status(service) for service in ALLOWED_SERVICES}
-    git = ermis_git_status()
-    try:
-        with socket.create_connection(("127.0.0.1", 8000), timeout=1):
-            listening = True
-    except OSError:
-        listening = False
-    return {
-        "healthy": listening and git["ok"] and all(
-            status.get("ok") and status.get("LoadState") == "loaded"
-            and status.get("ActiveState") == "active"
-            for status in services.values()
-        ),
-        "services": services,
-        "git": git,
-        "local_mcp_port_listening": listening,
-    }
+def list_wols(wol_id: int | None = None, client: str | None = None,
+              product_text: str | None = None, status: str | None = None,
+              state: str | None = None, target_from: str | None = None,
+              target_to: str | None = None, limit: int = 50) -> dict:
+    """List/search WOLs using local AND filters over all read endpoint pages.
+    wol_id is exact; client and product_text (description) are case-insensitive
+    substrings; status (production_status) and state are case-insensitive exact
+    matches. State is available only when supplied upstream. Target bounds are
+    inclusive YYYY-MM-DD; undated WOLs are excluded when bounds are set.
+    limit: 1–200 WOLs, default 50, in upstream order. Returns selected fields,
+    total_matches and truncation; never raw upstream records.
+    Each item includes dimensions, model, code and routing progress. aggregate covers ALL matches before
+    limit: total_wols, counts_by_status (lifecycle), unknown_routing_wols (no
+    supplied steps), and step-weighted progress rounded to two decimals.
+    Only completed steps earn credit; active (started/in_progress), paused,
+    not_started and unknown steps earn zero. Active excludes paused. No steps
+    means null percent. Archive does not imply routing completion. Use client
+    and/or wol_id filters to scope these totals.
+    """
+    return _read_query(epoptia_read.list_wols, wol_id=wol_id, client=client,
+                       product_text=product_text, status=status, state=state,
+                       target_from=target_from, target_to=target_to, limit=limit)
 
 
 @mcp.tool()
-def ermis_codex_start(task: str) -> dict:
-    """Start one sandboxed coding job in the fixed Ermis project; returns immediately."""
-    return codex_jobs.start(task)
+def production_overview() -> dict:
+    """Aggregate all WOL pages: counts by production_status/state (missing =
+    unknown), total WOLs, numeric quantity sum and quantity coverage, dated WOLs
+    and past-target WOLs (all statuses; UTC today). Quantities are not converted
+    between units. Returns totals only, with no raw upstream records.
+    """
+    return _read_query(epoptia_read.overview)
 
 
 @mcp.tool()
-def ermis_codex_status(job_id: str) -> dict:
-    """Read a Codex job's persistent state and exit information."""
-    return codex_jobs.status(job_id)
+def due_wols(mode: str = "due_soon", days: int = 7, as_of: str | None = None,
+             target_from: str | None = None, target_to: str | None = None,
+             limit: int = 50) -> dict:
+    """Query dated WOLs, earliest target first. mode: due_soon includes as_of
+    through as_of + days (0–3650); overdue means strictly before as_of, ignoring
+    days. as_of defaults to UTC today. Dates use YYYY-MM-DD; optional target_from
+    and target_to further restrict the inclusive window. Excludes production
+    statuses completed/cancelled/canceled; other or unknown statuses remain.
+    limit: 1–200 WOLs (default 50). Returns selected fields and match totals.
+    """
+    return _read_query(epoptia_read.due_wols, mode=mode, days=days, as_of=as_of,
+                       target_from=target_from, target_to=target_to, limit=limit)
 
 
 @mcp.tool()
-def ermis_codex_logs(job_id: str, tail_lines: int = 100) -> dict:
-    """Read up to 500 safe progress lines; raw Codex text is withheld for secrecy."""
-    return codex_jobs.logs(job_id, tail_lines)
+def workstation_wip(workstation: str | None = None, step: str | None = None,
+                    limit: int = 50) -> dict:
+    """List routing steps with status started/paused/in_progress, including WOL
+    summaries. workstation filters workstationName; step filters job_tag.name,
+    both case-insensitive substrings. Only supplied routing data is used;
+    missing stations group as unknown. Counts by workstation cover all matching
+    steps before limit (1–200 steps, default 50, upstream order). A WOL may occur
+    more than once. Returns selected fields, match totals and truncation.
+    """
+    return _read_query(epoptia_read.workstation_wip, workstation=workstation,
+                       step=step, limit=limit)
 
 
 if __name__ == "__main__":

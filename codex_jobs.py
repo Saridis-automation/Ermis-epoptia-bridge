@@ -1,6 +1,7 @@
 """Fixed-purpose Codex jobs. Raw prompts and output are never persisted."""
 
 from collections import deque
+import asyncio
 from datetime import datetime, timezone
 import fcntl
 import json
@@ -11,13 +12,17 @@ import re
 import stat
 import subprocess
 import threading
+import time
 import uuid
+
+from sanitized_report import build_report
 
 PROJECT_DIR = "/home/ermis/projects/epoptia-bridge"
 STATE_DIR = Path("/home/ermis/.local/state/ermis/codex-jobs")
 MAX_TASK_LENGTH = 16_000
 MAX_LINES = 500
 MAX_EVENT_BYTES = 65_536
+MAX_WAIT_SECONDS = 300
 COMMAND = (
     "/usr/bin/systemd-run", "--user", "--scope", "--quiet",
     "--no-ask-password", "--expand-environment=no", "--collect",
@@ -72,7 +77,7 @@ def _now():
 
 
 def _error(message):
-    return {"ok": False, "error": message}
+    return {"ok": False, "error": message, "raw_output_withheld": True}
 
 
 def _directory():
@@ -143,9 +148,18 @@ def _read(root, job_id):
             job[key] = datetime.fromisoformat(value).isoformat()
     if job["started_at"] is None:
         raise ValueError("Missing start time")
-    return {key: job[key] for key in (
+    result = {key: job[key] for key in (
         "job_id", "state", "started_at", "finished_at", "exit_code", "lines"
     )}
+    result["read_only"] = job.get("read_only") is True
+    result["read_only_enforced"] = job.get("read_only_enforced") is True
+    report = job.get("final_report")
+    if (result["read_only"] and result["read_only_enforced"]
+            and job["state"] == "completed" and job["exit_code"] == 0
+            and type(report) is dict):
+        result["final_report"] = build_report(
+            report.get("text"), report.get("truncated") is True)
+    return result
 
 
 def _finish(root, job, code, message):
@@ -168,19 +182,35 @@ def _run(root, job, task, lock_fd):
     process = None
     code = None
     outcome = FAILED
+    report = None
+    failed = False
+    read_only = job.get("read_only") is True
+    job["read_only_enforced"] = False
+    job.pop("final_report", None)
     try:
         # Scope mode enters the cgroup before exec; descendants inherit limits.
         # Never fall back to an unbounded launch if scope creation fails.
         env = CHILD_ENV.copy()
         env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
+        command = COMMAND
+        if read_only:
+            command = list(COMMAND)
+            command[command.index("--sandbox") + 1] = "read-only"
+            command = tuple(command)
         process = subprocess.Popen(
-            COMMAND, cwd=PROJECT_DIR, env=env, shell=False,
+            command, cwd=PROJECT_DIR, env=env, shell=False,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             start_new_session=True, close_fds=True, pass_fds=(lock_fd,),
         )
+        # Only this fixed launch path grants report eligibility. If Codex rejects
+        # the sandbox or the scope fails, the unsuccessful exit withholds it.
+        job["read_only_enforced"] = read_only
         # The inherited lock protects against overlap if the MCP process dies.
         try:
-            process.stdin.write((INSTRUCTIONS + task).encode("utf-8"))
+            inspection = ("Read-only inspection: do not change files. End with a concise "
+                          "report of findings and checks; omit all sensitive values.\n"
+                          if read_only else "")
+            process.stdin.write((INSTRUCTIONS + inspection + task).encode("utf-8"))
         finally:
             process.stdin.close()
         lines = deque(job["lines"], maxlen=MAX_LINES)
@@ -189,6 +219,7 @@ def _run(root, job, task, lock_fd):
             if not raw:
                 break
             if len(raw) > MAX_EVENT_BYTES:
+                failed = True  # An omitted event might contain a failed change.
                 while raw and not raw.endswith(b"\n"):
                     raw = process.stdout.readline(MAX_EVENT_BYTES + 1)
                 continue
@@ -196,6 +227,16 @@ def _run(root, job, task, lock_fd):
                 event = json.loads(raw)
                 kind = event.get("type") if isinstance(event, dict) else None
                 message = EVENTS.get(kind) if isinstance(kind, str) else None
+                if kind in ("turn.failed", "error"):
+                    failed = True
+                item = event.get("item") if isinstance(event, dict) else None
+                if isinstance(item, dict):
+                    if item.get("type") == "file_change":
+                        if item.get("status") == "failed" or read_only:
+                            failed = True
+                    if (kind == "item.completed" and item.get("type") == "agent_message"
+                            and read_only and job["read_only_enforced"]):
+                        report = build_report(item.get("text"))
             except (ValueError, UnicodeError, RecursionError):
                 message = None
             if message:
@@ -203,7 +244,10 @@ def _run(root, job, task, lock_fd):
                 job["lines"] = list(lines)
                 _write(root, job)
         code = process.wait()
-        outcome = COMPLETED if code == 0 else FAILED
+        outcome = COMPLETED if code == 0 and not failed else FAILED
+        if (outcome == COMPLETED and read_only and job["read_only_enforced"]
+                and report is not None):
+            job["final_report"] = report
     except Exception:
         # Exceptions can include sensitive text. Drain, retain lock, and reap.
         if process is not None:
@@ -225,19 +269,31 @@ def _run(root, job, task, lock_fd):
 
 
 def start(task: str) -> dict:
+    """Start a coding job; final reports are always withheld."""
+    return _start(task, read_only=False)
+
+
+def inspect(task: str) -> dict:
+    """Start an inspection with the mandatory read-only sandbox."""
+    return _start(task, read_only=True)
+
+
+def _start(task: str, *, read_only: bool) -> dict:
     if not isinstance(task, str) or not task.strip():
         return _error("Task must be non-empty")
     if len(task) > MAX_TASK_LENGTH:
         return _error("Task exceeds 16000 characters")
     if "\x00" in task:
         return _error("Task contains an invalid character")
+    # Only the explicit entry point selects mode; task text cannot grant reporting.
     lock_fd = None
     try:
         root = _directory()
         lock_fd = _lock(root)
         _recover(root)
         job = {"job_id": uuid.uuid4().hex, "state": "running", "started_at": _now(),
-               "finished_at": None, "exit_code": None, "lines": [ACCEPTED]}
+               "finished_at": None, "exit_code": None, "lines": [ACCEPTED],
+               "read_only": read_only, "read_only_enforced": False}
         _write(root, job)
         worker = threading.Thread(target=_run, args=(root, job, task, lock_fd),
                                   name="ermis-codex-job", daemon=False)
@@ -247,7 +303,8 @@ def start(task: str) -> dict:
             _finish(root, job, None, FAILED)
             return _error("Cannot start job worker")
         lock_fd = None  # Worker owns the lock from here.
-        return {"ok": True, "job_id": job["job_id"], "state": "running"}
+        return {"ok": True, "job_id": job["job_id"], "state": "running",
+                "read_only": read_only, "raw_output_withheld": True}
     except BlockingIOError:
         return _error("Another Codex job is running")
     except (OSError, ValueError, KeyError, TypeError, RecursionError):
@@ -279,9 +336,33 @@ def _lookup(job_id):
 def status(job_id: str) -> dict:
     try:
         job = _lookup(job_id)
-        return {"ok": True, **{key: value for key, value in job.items() if key != "lines"}}
+        return {"ok": True, "raw_output_withheld": True,
+                **{key: value for key, value in job.items() if key != "lines"}}
     except (OSError, ValueError, KeyError, TypeError, RecursionError):
         return _error("Invalid, unknown, or unavailable job ID")
+
+
+async def wait(job_id: str, timeout_seconds: int = 300) -> dict:
+    """Wait server-side for a terminal state, returning only sanitized status.
+
+    Timeout is an integer from 1 through 300 seconds. timed_out is true only
+    when the job is still running at the deadline; it does not cancel the job.
+    Cancellation of this request also leaves the job running.
+    """
+    if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= MAX_WAIT_SECONDS:
+        return _error("timeout_seconds must be an integer between 1 and 300")
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        result = status(job_id)
+        if not result["ok"]:
+            return result
+        if result["state"] in ("completed", "failed"):
+            return {**result, "timed_out": False}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {**result, "timed_out": True}
+        # Yield the MCP event loop; no client-side polling is needed.
+        await asyncio.sleep(min(1.0, remaining))
 
 
 def logs(job_id: str, tail_lines: int = 100) -> dict:
@@ -291,6 +372,7 @@ def logs(job_id: str, tail_lines: int = 100) -> dict:
     try:
         job = _lookup(job_id)
         return {"ok": True, "job_id": job_id, "tail_lines": limit,
-                "lines": job["lines"][-limit:], "raw_output_withheld": True}
+                "lines": job["lines"][-limit:], "raw_output_withheld": True,
+                **({"final_report": job["final_report"]} if "final_report" in job else {})}
     except (OSError, ValueError, KeyError, TypeError, RecursionError):
         return _error("Invalid, unknown, or unavailable job ID")
