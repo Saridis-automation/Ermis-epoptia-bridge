@@ -27,7 +27,8 @@ class GatewayTest(unittest.TestCase):
         return asyncio.run(self.gateway.confirm(body))
 
     def test_every_allowlisted_read_routes_without_confirmation(self):
-        values = dict(wol_id=12, workorder_id=34, service="ermis-system-mcp.service", job_id="a" * 32)
+        values = dict(wol_id=12, workorder_id=34, service="ermis-system-mcp.service",
+                      job_id="a" * 32, workstation="Strantza")
         for name, action in ACTIONS.items():
             if action.write:
                 continue

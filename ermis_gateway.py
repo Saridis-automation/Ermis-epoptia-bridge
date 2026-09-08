@@ -26,6 +26,7 @@ ACTIONS = {
     "list_wols": Action("Epoptia_MES", "list_wols"),
     "due_wols": Action("Epoptia_MES", "due_wols"),
     "workstation_wip": Action("Epoptia_MES", "workstation_wip"),
+    "station_wip": Action("Epoptia_MES", "workstation_wip", ("workstation",)),
     "health": Action("Ermis_System", "ermis_health"),
     "git_status": Action("Ermis_System", "ermis_git_status"),
     "service_status": Action("Ermis_System", "ermis_service_status", ("service",)),
@@ -53,6 +54,9 @@ def route(text):
     }
     if text in phrases:
         return phrases[text], {}
+    match = re.fullmatch(r"what is running in ([\w -]{1,80}) now", text)
+    if match:
+        return "station_wip", {"workstation": match[1]}
     match = re.fullmatch(r"(?:show )?wol (status|details) ([1-9][0-9]{0,14})", text)
     if match:
         return "wol_" + match[1], {"wol_id": int(match[2])}
@@ -79,6 +83,8 @@ def validate(name, arguments):
             valid = type(value) is int and 1 <= value <= 999999999999999
         elif key == "service":
             valid = type(value) is str and value in ALLOWED_SERVICES
+        elif key == "workstation":
+            valid = type(value) is str and re.fullmatch(r"[\w -]{1,80}", value) and value.strip()
         else:
             valid = type(value) is str and re.fullmatch(r"[0-9a-f]{32}", value)
         if not valid:

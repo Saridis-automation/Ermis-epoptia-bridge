@@ -1,0 +1,5 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 3rem auto; padding: 0 1rem; max-width: 42rem; line-height: 1.6; }
+button { padding: .7rem 1rem; margin: .3rem .3rem .3rem 0; cursor: pointer; }
+audio { display: block; margin-top: 1rem; max-width: 100%; }
+#approval { margin-top: 1.5rem; padding: 1rem; border: 2px solid #bc861f; }

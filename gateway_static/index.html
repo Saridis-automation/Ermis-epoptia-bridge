@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ermis Voice</title>
+  <link rel="stylesheet" href="/voice.css">
+  <script src="/voice.js" defer></script>
+</head>
+<body>
+  <main>
+    <h1>Ermis Voice</h1>
+    <p>Ask about production. Try “What is running in Strantza now?”</p>
+    <p>Your microphone audio and requested tool results are sent to OpenAI.
+       You will hear an AI-generated voice. Conversations stop after 10 minutes.</p>
+    <button id="start">Start conversation</button>
+    <button id="stop" disabled>Stop microphone &amp; conversation</button>
+    <p id="status" role="status" aria-live="polite">Ready</p>
+    <audio id="audio" autoplay controls></audio>
+    <section id="approval" hidden aria-label="Confirm action">
+      <h2>Review action</h2>
+      <p id="proposal"></p>
+      <button id="approve">Approve this action</button>
+      <button id="cancel">Cancel action</button>
+    </section>
+  </main>
+</body>
+</html>
