@@ -239,7 +239,8 @@ class MCPTests(unittest.TestCase):
         nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef)
                  and node.name in names | {'_read_query'}]
         server = MCPServer('Synthetic tests')
-        scope = {'mcp': server, 'epoptia_read': read, 'BASE_URL': 'https://example.invalid', 'HEADERS': {}}
+        scope = {'mcp': server, 'epoptia_read': read, 'BASE_URL': 'https://example.invalid', 'HEADERS': {},
+                 'WEB_USERNAME': None, 'WEB_PASSWORD': None}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), 'mcp_server.py', 'exec'), scope)
         registered = asyncio.run(server.list_tools())
         self.assertEqual({tool.name for tool in registered}, names)

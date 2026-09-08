@@ -11,7 +11,8 @@ import ermis_system_server as system
 
 
 BUSINESS = {'get_wol_status', 'get_wol_details', 'list_wols',
-            'production_overview', 'due_wols', 'workstation_wip'}
+            'production_overview', 'due_wols', 'workstation_wip',
+            'inspect_workorder_progress'}
 ADMIN = {'ermis_git_status', 'ermis_git_commit', 'ermis_service_status', 'ermis_service_control',
          'ermis_health', 'ermis_codex_start', 'ermis_codex_inspect',
          'ermis_codex_status', 'ermis_codex_wait', 'ermis_codex_logs',

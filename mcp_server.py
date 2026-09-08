@@ -9,6 +9,8 @@ load_dotenv()
 
 BASE_URL = os.getenv("EPOPTIA_BASE_URL")
 API_KEY = os.getenv("EPOPTIA_API_KEY")
+WEB_USERNAME = os.getenv("EPOPTIA_USERNAME")
+WEB_PASSWORD = os.getenv("EPOPTIA_PASSWORD")
 
 HEADERS = {
     "X-Auth-Token": API_KEY,
@@ -147,6 +149,7 @@ def get_wol_status(wol_id: int) -> dict:
         "in_progress": in_progress,
         "not_started": not_started,
         "technical_details": epoptia_read.technical_details(wol),
+        **epoptia_read.native_progress_metadata(),
         "progress": epoptia_read.routing_progress(routing)
     }
 
@@ -161,6 +164,22 @@ def _read_query(query, **filters):
         return {"ok": False, "error": str(exc)}
     except epoptia_read.ReadError:
         return {"ok": False, "error": "Epoptia read unavailable"}
+
+
+@mcp.tool()
+def inspect_workorder_progress(workorder_id: int) -> dict:
+    """Read native overall workorder progress from capacity-planning WOLs.
+
+    Matches nested workorder.id and returns nested workorder.progress after
+    pagination and consistency checks. Root WOL progress is not overall progress.
+    Missing, conflicting or incomplete results return a safe diagnostic.
+    """
+    try:
+        return {"ok": True, **epoptia_read.inspect_workorder_progress(
+            BASE_URL, HEADERS, workorder_id,
+            username=WEB_USERNAME, password=WEB_PASSWORD)}
+    except ValueError:
+        return {"ok": False, "error": "workorder_id must be an integer from 1 to 2147483647"}
 
 
 @mcp.tool()
@@ -208,9 +227,16 @@ def production_overview() -> dict:
     """Aggregate all WOL pages: counts by production_status/state (missing =
     unknown), total WOLs, numeric quantity sum and quantity coverage, dated WOLs
     and past-target WOLs (all statuses; UTC today). Quantities are not converted
-    between units. Returns totals only, with no raw upstream records.
+    between units. Includes mean native progress of distinct production/standby
+    workorders; invalid or conflicting progress is excluded. Incomplete native
+    scans return null aggregates. Returns totals only, with no raw records.
     """
-    return _read_query(epoptia_read.overview)
+    result = _read_query(epoptia_read.overview)
+    if not result.get('ok'):
+        return result
+    result.update(epoptia_read.active_production_progress(
+        BASE_URL, username=WEB_USERNAME, password=WEB_PASSWORD))
+    return result
 
 
 @mcp.tool()

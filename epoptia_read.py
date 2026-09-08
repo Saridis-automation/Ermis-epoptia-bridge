@@ -2,6 +2,9 @@
 from collections import Counter
 from datetime import date, datetime, timezone
 import math
+import re
+from html.parser import HTMLParser
+from urllib.parse import unquote, urlsplit
 
 import requests
 
@@ -44,6 +47,279 @@ def fetch_wols(base_url, headers):
             raise ReadError('Invalid Epoptia pagination')
         rows.extend(data['workorderLines'])
     return [row for row in rows if isinstance(row, dict)]
+
+
+class _LoginToken(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.token = None
+        self.has_password = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == 'input' and attrs.get('type', '').lower() == 'password':
+            self.has_password = True
+        if (tag == 'input' and attrs.get('name') == '_token'
+                and attrs.get('type', '').lower() == 'hidden'):
+            self.token = attrs.get('value')
+
+
+def _web_login(session, base_url, username, password):
+    """Authenticate without exposing upstream bodies or credential diagnostics."""
+    parts = urlsplit(base_url)
+    if parts.scheme not in ('http', 'https') or not parts.netloc:
+        return False
+    login_url = base_url.rstrip('/') + '/login'
+    session.headers.update({'Origin': f'{parts.scheme}://{parts.netloc}',
+                            'Referer': login_url})
+    response = session.get(login_url, timeout=20, allow_redirects=True)
+    if response.status_code != 200:
+        return False
+    parser = _LoginToken()
+    parser.feed(response.text)
+    if not parser.token:
+        return False
+    response = session.post(login_url, data={
+        '_token': parser.token, 'username': username, 'password': password,
+    }, timeout=20, allow_redirects=True)
+    final_url = urlsplit(response.url)
+    parser = _LoginToken()
+    parser.feed(response.text)
+    if (response.status_code != 200 or not response.history
+            or (final_url.scheme, final_url.netloc) != (parts.scheme, parts.netloc)
+            or final_url.path.rstrip('/') == urlsplit(login_url).path.rstrip('/')
+            or parser.has_password):
+        return False
+    session.headers.update({'Accept': 'application/json',
+                            'Referer': base_url.rstrip('/') + '/capacity-planning'})
+    return True
+
+
+def inspect_workorder_progress(base_url, headers, workorder_id, *, username=None, password=None):
+    """Use one cookie-preserving session for login and all progress pages."""
+    if type(workorder_id) is not int or not 1 <= workorder_id <= 2147483647:
+        raise ValueError('workorder_id must be an integer from 1 to 2147483647')
+    with requests.Session() as session:
+        authenticated = False
+        if username and password:
+            try:
+                authenticated = _web_login(session, base_url, username, password)
+            except (requests.RequestException, ValueError):
+                pass
+        return _inspect_workorder_progress(base_url, session, workorder_id, authenticated)
+
+
+def _production_workorder_lines(data):
+    """Flatten production buckets without descending into WOL record fields."""
+    pending = [data]
+    rows = []
+    visited = 0
+    while pending:
+        node = pending.pop()
+        visited += 1
+        if visited > 100000:
+            raise ValueError('Production scan limit exceeded')
+        if isinstance(node, dict) and 'workorder' in node:
+            rows.append(node)
+        elif isinstance(node, (dict, list)):
+            children = node.values() if isinstance(node, dict) else node
+            if visited + len(pending) + len(node) > 100000:
+                raise ValueError('Production scan limit exceeded')
+            pending.extend(children)
+        else:
+            raise ValueError('Invalid production bucket')
+    return rows
+
+
+def _inspect_workorder_progress(base_url, session, workorder_id, authenticated):
+    """Read nested native workorder progress; fail closed on incomplete scans."""
+    if type(workorder_id) is not int or not 1 <= workorder_id <= 2147483647:
+        raise ValueError('workorder_id must be an integer from 1 to 2147483647')
+    endpoint = '/capacity-planning/workorderlines'
+    source = dict(endpoint=endpoint, method='POST', path='/workorder/progress',
+                  status='unavailable', complete=False, pages_read=0,
+                  linked_wol_records=0, order_identity_verified=False)
+    report = dict(workorder_id=workorder_id, native_progress=None,
+                  native_progress_verified=False, sources=[source])
+    if not authenticated:
+        source['status'] = 'login_failed'
+        return report
+    values = set()
+    invalid_progress = False
+
+    def consume(rows):
+        nonlocal invalid_progress
+        for row in rows:
+            parent = row.get("workorder")
+            if not isinstance(parent, dict):
+                continue
+            identity = parent.get('id')
+            if not (type(identity) is int and identity == workorder_id
+                    or type(identity) is str and identity == str(workorder_id)):
+                continue
+            source['linked_wol_records'] += 1
+            source['order_identity_verified'] = True
+            value = parent.get('progress')
+            if type(value) is str and re.fullmatch(r'\d{1,3}(?:\.\d{1,8})?', value):
+                value = float(value)
+            if type(value) not in (int, float) or not 0 <= value <= 100:
+                invalid_progress = True
+            else:
+                values.add(value)
+        return source["order_identity_verified"]
+
+    if not _scan_production_pages(base_url, session, source, consume):
+        return report
+    if len(values) > 1:
+        source['status'] = 'conflicting_progress'
+    elif invalid_progress:
+        source['status'] = 'invalid_progress'
+    elif not values:
+        source['status'] = 'not_found'
+    else:
+        source['status'] = 'ok'
+        report.update(native_progress=values.pop(), native_progress_verified=True)
+    return report
+
+
+def _scan_production_pages(base_url, session, source, consume):
+    """Shared authenticated pagination; consumers may stop early."""
+    endpoint = '/capacity-planning/workorderlines'
+    pages = None
+    seen_pages = set()
+    for page in range(1, 1001):
+        try:
+            # Cookies can rotate between pages.
+            session.headers.pop('X-XSRF-TOKEN', None)
+            for cookie in session.cookies:
+                if cookie.name == 'XSRF-TOKEN':
+                    session.headers['X-XSRF-TOKEN'] = unquote(cookie.value)
+            response = session.post(
+                base_url.rstrip('/') + endpoint,
+                json={'onlyList': True, 'page': page}, timeout=20,
+                allow_redirects=False)
+            source['http_status'] = response.status_code
+            if response.status_code != 200:
+                return False
+            data = response.json()
+        except (requests.RequestException, ValueError):
+            return False
+        # Grouped responses are paginated even without explicit page metadata.
+        # Keep supporting the existing list/page shapes.
+        grouped = isinstance(data, dict) and 'capacityPlanningData' in data
+        if grouped:
+            capacity = data['capacityPlanningData']
+            try:
+                rows = _production_workorder_lines(
+                    capacity.get('productionData') if isinstance(capacity, dict) else None)
+            except ValueError:
+                source['status'] = 'invalid_response'
+                return False
+        else:
+            rows = data if isinstance(data, list) else (
+                data.get('workorderLines') if isinstance(data, dict) else None)
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            source['status'] = 'invalid_response'
+            return False
+        if isinstance(data, dict) and 'numberOfPages' in data:
+            count = data['numberOfPages']
+            if (type(count) is not int or not 0 <= count <= 1000
+                    or (pages is not None and count != pages)
+                    or page > max(1, count) or (count == 0 and rows)):
+                source['status'] = 'invalid_pagination'
+                return False
+            pages = count
+        source['pages_read'] += 1
+        if not rows:
+            if pages is not None and pages > 0:
+                source['status'] = 'invalid_pagination'
+                return False
+            break
+        # Only fixed identity/progress fields enter the signature, never raw records.
+        signature = []
+        for row in rows:
+            parent = row.get('workorder')
+            if not isinstance(parent, dict):
+                continue
+            signature.append(tuple(scalar(value) for value in (
+                row.get('id'), row.get('workorderline_id'),
+                parent.get('id'), parent.get('progress'))))
+        signature = tuple(signature)
+        has_wol_ids = signature and all(item[0] is not None or item[1] is not None
+                                        for item in signature)
+        if has_wol_ids and signature in seen_pages:
+            source['status'] = 'repeated_page'
+            return False
+        seen_pages.add(signature)
+        if consume(rows) or pages is not None and page >= pages:
+            break
+    else:
+        source['status'] = 'pagination_limit'
+        return False
+    source['complete'] = True
+    return True
+
+
+def active_production_progress(base_url, *, username=None, password=None):
+    """Average distinct active orders after a complete authenticated scan.
+
+    Invalid or conflicting duplicates exclude an order. Empty populations have
+    zero coverage and no mean; incomplete scans have null aggregate values.
+    """
+    report = dict(active_workorders_total=None,
+                  active_workorders_with_native_progress=None,
+                  native_progress_coverage_percent=None,
+                  native_active_production_progress_percent=None,
+                  native_progress_conflict_count=None)
+    source = dict(status='login_failed', complete=False, pages_read=0)
+    orders = {}
+
+    def consume(rows):
+        for row in rows:
+            status = row.get('production_status')
+            if status is None:
+                status = row.get('status')
+            if status not in ('production', 'standby'):
+                continue
+            parent = row.get('workorder')
+            if not isinstance(parent, dict):
+                continue
+            identity = parent.get('id')
+            if type(identity) is str and re.fullmatch(r'[1-9][0-9]{0,9}', identity):
+                identity = int(identity)
+            if type(identity) is not int or not 1 <= identity <= 2147483647:
+                continue
+            values, invalid = orders.setdefault(identity, (set(), False))
+            value = parent.get('progress')
+            if type(value) is str and re.fullmatch(r'\d{1,3}(?:\.\d{1,8})?', value):
+                value = float(value)
+            if type(value) in (int, float) and 0 <= value <= 100:
+                values.add(value)
+            else:
+                invalid = True
+            orders[identity] = values, invalid
+        return False
+
+    with requests.Session() as session:
+        try:
+            authenticated = bool(username and password and
+                                 _web_login(session, base_url, username, password))
+        except (requests.RequestException, ValueError):
+            authenticated = False
+        if authenticated:
+            source['status'] = 'unavailable'
+            if _scan_production_pages(base_url, session, source, consume):
+                source['status'] = 'ok'
+                values = [next(iter(values)) for values, invalid in orders.values()
+                          if len(values) == 1 and not invalid]
+                report.update(
+                    active_workorders_total=len(orders),
+                    active_workorders_with_native_progress=len(values),
+                    native_progress_coverage_percent=100 * len(values) / len(orders) if orders else 0,
+                    native_active_production_progress_percent=sum(values) / len(values) if values else None,
+                    native_progress_conflict_count=sum(len(values) > 1 for values, _ in orders.values()))
+    report['native_active_production_progress_source'] = source
+    return report
 
 
 def scalar(value):
@@ -108,9 +384,15 @@ def aggregate_progress(items):
             'progress': totals}
 
 
+def native_progress_metadata():
+    return {'native_progress': None, 'native_progress_verified': False,
+            'native_progress_verification': 'No verified per-WOL native progress mapping'}
+
+
 def summary(row):
     client = row.get('client')
     return {
+        **native_progress_metadata(),
         'workorderline_id': scalar(row.get('workorderline_id')),
         'description': scalar(row.get('description')),
         'client': scalar(client.get('name')) if isinstance(client, dict) else None,

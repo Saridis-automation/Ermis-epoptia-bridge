@@ -1,12 +1,22 @@
 MCP process split
 =================
 
-Implementation summary: `mcp_server.py` retains the six Epoptia business tools,
-the existing server identity (`Epoptia MES`), and streamable HTTP on loopback
+Implementation summary: `mcp_server.py` retains the six existing Epoptia business
+tools and adds the generic `inspect_workorder_progress(workorder_id)` tool.
+It preserves the existing server identity (`Epoptia MES`) and streamable HTTP on loopback
 port 8000. `ermis_system_server.py` registers the ten infrastructure tools as
 `Ermis_System`, on loopback port 8001, using the existing shared `codex_jobs`,
 `technical_reports`, and `service_control` modules. It does not load `.env`.
 Both use the SDK's default `/mcp` endpoint and existing requirements.txt.
+
+Native progress uses nested `workorder.progress` from capacity-planning pages.
+The single-workorder lookup stops at the first matching page and checks
+consistency within that page; it does not establish consistency across later pages.
+`production_overview` also reports the mean for distinct production/standby
+workorders, with coverage and conflict counts; incomplete scans return null
+aggregates. The existing web-session transport and its synthetic tests support
+these reads. Routing completion remains separate from native progress.
+Temporary fixed-record probes and heuristic progress-discovery tools are removed.
 
 Deployment guidance (not performed)
 -----------------------------------
