@@ -16,7 +16,7 @@ BUSINESS = {'get_wol_status', 'get_wol_details', 'list_wols',
 ADMIN = {'ermis_git_status', 'ermis_git_commit', 'ermis_service_status', 'ermis_service_control',
          'ermis_health', 'ermis_codex_start', 'ermis_codex_inspect',
          'ermis_codex_status', 'ermis_codex_wait', 'ermis_codex_logs',
-         'ermis_technical_report_read'}
+         'ermis_technical_report_read', 'ermis_gateway_execute'}
 
 
 class SeparationTest(unittest.TestCase):

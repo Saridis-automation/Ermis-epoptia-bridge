@@ -4,8 +4,52 @@ Ermis Gateway / Voice
 This extends commit `128af49f3298` with a local browser voice client on
 `http://127.0.0.1:8002/` (also `http://localhost:8002/`). The gateway is a separate
 process. Epoptia_MES on 8000 and Ermis_System on 8001 remain the source of truth;
-all business/system actions call their existing MCP tools. No MCP registrations,
-existing services, tunnel settings or dependencies change.
+all business/system actions call their existing MCP tools. Ermis_System also
+exposes the single `ermis_gateway_execute` MCP entry point described below.
+Existing services, tunnel settings and dependencies are unchanged on disk.
+
+ChatGPT / Project MCP entry point
+--------------------------------
+
+Use `ermis_gateway_execute` on the existing Ermis_System connector (`/mcp` on
+loopback port 8001). No second set of Epoptia or infrastructure tools is registered.
+The wrapper calls `Gateway.request` or `Gateway.confirm`; dispatch stays in the
+shared allowlist and uses the existing local MCP endpoints. The adapter accepts
+structured dictionaries or a single JSON-text dictionary from existing tools.
+
+Read example (tool arguments):
+
+```json
+{"operation":"request","payload":{"session_id":"chat_session_0001","action":"station_wip","arguments":{"workstation":"Strantza"}}}
+```
+
+Alternatively supply `text` instead of `action` and `arguments`, for example
+`"text":"show production overview"`. Use a unique session ID per conversation,
+16–128 letters, digits, underscores or hyphens. Supported actions and exact
+argument names are defined by `ACTIONS` in `ermis_gateway.py` and advertised in
+the tool description. Unknown actions, extra payload fields and invalid values
+are rejected by the existing policy.
+
+A write request only returns `confirmation_required`. ChatGPT must present the
+exact proposal and wait for explicit user approval before calling the same tool
+with `operation: "confirm"` and a payload containing only `session_id`, the
+returned `confirmation_id`, and boolean `approved` (false cancels). The existing
+120-second expiry, session binding and atomic single-use consumption apply.
+The MCP host must enforce user approval: a caller-supplied boolean is not proof
+of human consent. Session IDs are correlation IDs, not authentication.
+
+This wrapper owns one process-local Gateway instance in Ermis_System. Its
+confirmation IDs cannot be used in the separate browser gateway or survive a
+process restart; run a single worker. Unlike the voice flow, MCP confirmation
+IDs are returned to the tool caller. Existing voice approval handling is unchanged.
+Only the existing allowlisted restart is a write; arbitrary destructive actions
+are unsupported. Inspect nested `result.ok`/`accepted` and never automatically
+retry `outcome_unknown`.
+
+Activation requires a separately authorized Ermis_System restart and connector
+tool-discovery refresh using its existing protected tunnel route. No tunnel,
+authentication, listener or Epoptia registration changes are required. The local
+browser port 8002 remains private. See [MCP_SERVERS.md](MCP_SERVERS.md).
 
 Voice transport
 ---------------
@@ -82,7 +126,7 @@ write tool. Approved service names reuse `service_control.ALLOWED_SERVICES`.
 
 The only existing write action is `restart_service`. Requesting it creates a
 proposal with the exact service and a 120-second, opaque, session-bound token;
-nothing executes yet. Approval tokens never enter model messages. Explicit user
+nothing executes yet. In the voice flow, approval tokens never enter model messages. Explicit user
 button approval consumes the pending record atomically before MCP execution.
 Speech such as “yes”, model-supplied approval arguments, incorrect sessions,
 expired tokens and replay cannot authorize an operation. Cancellation and Stop

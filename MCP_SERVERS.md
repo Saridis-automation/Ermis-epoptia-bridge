@@ -4,10 +4,23 @@ MCP process split
 Implementation summary: `mcp_server.py` retains the six existing Epoptia business
 tools and adds the generic `inspect_workorder_progress(workorder_id)` tool.
 It preserves the existing server identity (`Epoptia MES`) and streamable HTTP on loopback
-port 8000. `ermis_system_server.py` registers the ten infrastructure tools as
+port 8000. `ermis_system_server.py` registers the existing infrastructure tools as
 `Ermis_System`, on loopback port 8001, using the existing shared `codex_jobs`,
 `technical_reports`, and `service_control` modules. It does not load `.env`.
 Both use the SDK's default `/mcp` endpoint and existing requirements.txt.
+
+Ermis_System additionally registers exactly one gateway tool,
+`ermis_gateway_execute(operation, payload)`, using the shared Gateway allowlist
+and confirmation policy. It adds no duplicate business/system registrations or
+diagnostic tools. See [GATEWAY.md](GATEWAY.md) for request/confirmation examples
+and the ChatGPT host's explicit-approval responsibility. Gateway upstream calls
+use the existing endpoints, including port 8001 for system actions; the wrapper
+is async so these calls can be served by the same process. The gateway itself
+is not an allowlisted upstream action, preventing recursive gateway dispatch.
+The existing protected Ermis_System connector/tunnel route exposes the new tool
+after an authorized restart of that MCP process and discovery refresh. No tunnel
+configuration or Epoptia restart is needed for this addition. Nothing is deployed
+by the implementation task; live connector reachability is not locally verified.
 
 Native progress uses nested `workorder.progress` from capacity-planning pages.
 The single-workorder lookup stops at the first matching page and checks

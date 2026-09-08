@@ -4,7 +4,9 @@ Uses shared job, report and service modules without loading Epoptia credentials.
 """
 import socket
 import subprocess
+from typing import Any, Literal
 from mcp.server.mcpserver import MCPServer
+from ermis_gateway import Gateway
 import codex_jobs
 import technical_reports
 import service_control
@@ -19,6 +21,35 @@ mcp = MCPServer(
 
 PROJECT_DIR = "/home/ermis/projects/epoptia-bridge"
 ALLOWED_SERVICES = service_control.ALLOWED_SERVICES
+gateway = Gateway()
+
+
+@mcp.tool(structured_output=True)
+async def ermis_gateway_execute(operation: Literal["request", "confirm"], payload: dict) -> dict[str, Any]:
+    """Invoke the Ermis Gateway allowlist through one entry point.
+
+    request payload: session_id plus either text, or action and arguments.
+    Use a unique conversation session_id (16-128 letters, digits, _ or -).
+    Actions: production_overview, wol_status, wol_details, workorder_progress,
+    list_wols, due_wols, workstation_wip, station_wip, health, git_status,
+    service_status, job_status, job_logs, restart_service. Arguments follow the
+    gateway contract: wol_status/wol_details require wol_id; workorder_progress
+    requires workorder_id; station_wip requires workstation; service_status and
+    restart_service require service; job_status/job_logs require job_id. Other
+    actions require {}. Unknown actions and extra fields are rejected.
+
+    Writes return confirmation_required without executing. Show the exact
+    proposal to the user and wait for explicit approval before confirm.
+    confirm payload: same session_id, returned confirmation_id, approved boolean
+    (false cancels). Never infer approval from the original request. Tokens are
+    single-use and expire after 120 seconds. Do not retry an unknown write outcome.
+    completed means upstream returned; also inspect result.ok and accepted.
+    """
+    if operation == "request":
+        return await gateway.request(payload)
+    if operation == "confirm":
+        return await gateway.confirm(payload)
+    return {"ok": False, "status": "unsupported_request"}
 
 
 @mcp.tool()

@@ -1,6 +1,7 @@
 """Local orchestration policy. No credential loading or business registrations."""
 import asyncio
 from dataclasses import dataclass
+import json
 import re
 import secrets
 import threading
@@ -107,6 +108,12 @@ async def call_existing(server, tool, arguments):
                     raise RuntimeError("Upstream failed")
                 # Existing tools provide structured, bounded business/system results.
                 data = result.structured_content
+                if data is None and len(result.content) == 1 and result.content[0].type == "text":
+                    # Existing unparameterized dict tools use JSON text in this SDK.
+                    try:
+                        data = json.loads(result.content[0].text)
+                    except (ValueError, TypeError):
+                        raise RuntimeError("Unexpected upstream response") from None
                 if not isinstance(data, dict):
                     raise RuntimeError("Unexpected upstream response")
                 return data

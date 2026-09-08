@@ -130,6 +130,15 @@ class GatewayTest(unittest.TestCase):
             self.assertEqual(connect.call_args.args, ("http://127.0.0.1:8000/mcp",))
             session.initialize.assert_awaited_once()
             session.call_tool.assert_awaited_once_with("production_overview", {})
+            session.call_tool.return_value.structured_content = None
+            session.call_tool.return_value.content = [Mock(type="text", text='{"ok": true}')]
+            self.assertEqual(asyncio.run(call_existing("Ermis_System", "ermis_health", {})), {"ok": True})
+            for content in ([], [Mock(type="text", text="[]")],
+                            [Mock(type="text", text="invalid JSON")],
+                            [Mock(type="image")], [Mock(type="text"), Mock(type="text")]):
+                session.call_tool.return_value.content = content
+                with self.assertRaises(RuntimeError):
+                    asyncio.run(call_existing("Ermis_System", "ermis_health", {}))
             session.call_tool.return_value.is_error = True
             with self.assertRaises(RuntimeError):
                 asyncio.run(call_existing("Epoptia_MES", "production_overview", {}))
