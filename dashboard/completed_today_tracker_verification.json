@@ -1,0 +1,10 @@
+{
+  "exact_cause_category": "unverified_project_tracker_db_and_full_snapshot_absent",
+  "tests_passed": 42,
+  "tests_failed": 2,
+  "implementation_ready": false,
+  "restart_required": true,
+  "deterministic_recovery_events_count": 0,
+  "unrecoverable_prebaseline_changes_possible": true,
+  "identity_version": 2
+}

@@ -1,0 +1,9 @@
+{
+  "live_return_path_wired": true,
+  "always_present_verified": true,
+  "tests_passed": 47,
+  "tests_failed": 0,
+  "implementation_ready": true,
+  "restart_required_services": ["ermis-epoptia-mcp.service"],
+  "verification_scope": "Local synthetic tests of the existing reader, MCP tool body and Gateway action; no live calls or service restarts performed."
+}

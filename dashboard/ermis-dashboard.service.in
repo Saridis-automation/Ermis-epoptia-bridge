@@ -1,0 +1,29 @@
+# Repo-local template only; installation/activation is a separate operator step.
+[Unit]
+Description=Ermis production dashboard
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=ermis
+Group=ermis
+WorkingDirectory=/home/ermis/projects/epoptia-bridge
+ExecStart=/home/ermis/projects/epoptia-bridge/venv/bin/python -m dashboard.server --port 8010
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=35
+KillSignal=SIGTERM
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+RestrictSUIDSGID=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

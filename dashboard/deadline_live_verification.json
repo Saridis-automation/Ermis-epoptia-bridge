@@ -1,0 +1,16 @@
+{
+  "cause_category": "dns_resolution_failed_before_http_response",
+  "live_http_ok": false,
+  "live_complete": false,
+  "workorder_701_found": null,
+  "deadline_701": null,
+  "workorder_718_found": null,
+  "deadline_718": null,
+  "conflict_count": null,
+  "bucket_count": null,
+  "row_count": null,
+  "tests_passed": 23,
+  "tests_failed": 0,
+  "implementation_ready": false,
+  "restart_required": false
+}

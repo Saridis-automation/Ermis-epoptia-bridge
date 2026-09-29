@@ -1,0 +1,11 @@
+{
+  "service_active": false,
+  "restart_loop": null,
+  "failure_stage": "unknown",
+  "exception_class": null,
+  "error_category": "service_status_unavailable",
+  "module_hint": null,
+  "function_hint": null,
+  "latest_error_seen": false,
+  "recommended_action": "unknown"
+}

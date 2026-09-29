@@ -1,0 +1,46 @@
+{
+  "kind": "changed_collectors_real_transport_attempt_not_successful_refresh",
+  "sources": {
+    "production_overview": {
+      "attempts": 1,
+      "generation": 0,
+      "refresh_sequence": 1,
+      "consecutive_failures": 1,
+      "last_success": null,
+      "last_failure": "2026-09-09T06:11:44.705747+00:00",
+      "failure_reason": "read_unavailable",
+      "last_attempt": "2026-09-09T06:11:44.150098+00:00",
+      "refreshing": false,
+      "state": "unavailable",
+      "duration_ms": 555.626,
+      "stale": false
+    },
+    "workstation_wip": {
+      "attempts": 1,
+      "generation": 0,
+      "refresh_sequence": 1,
+      "consecutive_failures": 1,
+      "last_success": null,
+      "last_failure": "2026-09-09T06:11:44.705849+00:00",
+      "failure_reason": "read_unavailable",
+      "last_attempt": "2026-09-09T06:11:44.703180+00:00",
+      "refreshing": false,
+      "state": "unavailable",
+      "duration_ms": 2.66,
+      "stale": false
+    }
+  },
+  "canonical_available": false,
+  "station_coverage": {
+    "available": false,
+    "reason": "raw_wol_routing_and_complete_terminal_filtered_scan_required"
+  },
+  "completion_coverage": {
+    "available": false,
+    "reason": "verified_history_reader_not_available_or_incomplete",
+    "metric": "distinct_whole_orders_latest_transition_completed_today_not_reopened",
+    "timezone": "Europe/Athens"
+  },
+  "socket_probe_error": "PermissionError: [Errno 1] Operation not permitted",
+  "successful_live_cycles": 0
+}

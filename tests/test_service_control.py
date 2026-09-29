@@ -25,10 +25,19 @@ class ServiceControlTest(unittest.TestCase):
             'ermis-epoptia-tunnel.service',
             'ermis-system-mcp.service',
             'ermis-system-tunnel.service',
+            'ermis-dashboard.service',
         ))
 
+    def test_login_unit_matches_bootstrap_artifact(self):
+        from admin_bootstrap.login_bootstrap import UNIT_NAME, artifacts
+        self.assertEqual(UNIT_NAME, 'ermis-epoptia-login.service')
+        self.assertNotIn(UNIT_NAME, services.ALLOWED_SERVICES)
+        self.assertIn(Path('/etc/systemd/system') / UNIT_NAME, artifacts())
+
     def test_rejects_unapproved_inputs_without_execution(self):
-        for service in ('ssh.service', '--all', self.service + ';id', '*', '', None, [],
+        for service in ('ssh.service', 'ermis-epoptia-login-supervisor.service',
+                        'ermis-epoptia-login@x.service', 'ermis-epoptia-login.*',
+                        '--all', self.service + ';id', '*', '', None, [],
                         '/usr/bin/systemctl', '/etc/systemd/system/' + self.service,
                         self.service + ' --force', 'sudo systemctl restart ' + self.service):
             for operation in ('status', 'restart'):
@@ -97,6 +106,13 @@ class ServiceControlTest(unittest.TestCase):
             result = services.control(self.service, operation)
             self.assertFalse(result['ok'])
             self.assertNotIn('withheld fixture', str(result))
+
+    def test_dashboard_restart_permission_denied_withholds_output(self):
+        self.run.return_value = SimpleNamespace(returncode=1, stdout='withheld fixture')
+        self.assertEqual(services.control('ermis-dashboard.service', 'restart'),
+                         dict(ok=False, service='ermis-dashboard.service',
+                              error='Service restart failed'))
+        self.run.assert_called_once()
 
     def test_mcp_registration_and_legacy_dispatch_without_server_import(self):
         from mcp.server.mcpserver import MCPServer

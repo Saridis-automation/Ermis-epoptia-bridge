@@ -1,0 +1,12 @@
+{
+  "cause_category": "current_workspace_already_parent_scoped_live_cause_unverified",
+  "grouped_by_parent_id": true,
+  "workorder_701_expected": "2026-09-18",
+  "workorder_718_expected": "2026-09-21",
+  "unrelated_same_customer_ignored": true,
+  "true_conflict_preserved": true,
+  "tests_passed": 54,
+  "tests_failed": 18,
+  "implementation_ready": false,
+  "restart_required": true
+}

@@ -185,3 +185,35 @@ test('cancelled or incomplete responses never dispatch tools', async () => {
   }
   assert.equal(h.calls.filter(c => c.path === '/voice/tool').length, 0);
 });
+
+test('LASER and WOL voice calls relay gateway results before requesting speech', async () => {
+  const h = setup();
+  await h.element('start').onclick();
+  const queries = [
+    {name: 'station_wip', args: {workstation: 'LASER'}, result: {ok: true, status: 'completed',
+      result: {items: [{workstation: 'LASER', step_status: 'paused'}], truncated: true}}},
+    {name: 'wol_status', args: {wol_id: 123}, result: {ok: true, status: 'completed',
+      result: {ok: false, error: 'WOL not found'}}}
+  ];
+  h.context.fetch = async (path, options) => {
+    const body = JSON.parse(options.body);
+    h.calls.push({path, body});
+    return {ok: true, json: async () => queries.find(q => q.name === body.name).result};
+  };
+  const event = {type: 'response.done', response: {status: 'completed', output: queries.map(q => ({
+    type: 'function_call', call_id: q.name, name: q.name, arguments: JSON.stringify(q.args)
+  }))}};
+  // Exercise the actual data-channel handler and its event queue.
+  h.peers[0].channel.onmessage({data: JSON.stringify(event)});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.calls.slice(1), queries.map(q => ({path: '/voice/tool', body: {
+    session_id: 'synthetic_session', call_id: q.name, name: q.name, arguments: q.args
+  }})));
+  assert.deepEqual(h.sent.slice(0, 2).map(e => ({type: e.item.type, callId: e.item.call_id,
+    result: JSON.parse(e.item.output)})), queries.map(q => ({
+      type: 'function_call_output', callId: q.name, result: q.result
+    })));
+  assert.deepEqual(h.sent[2], {type: 'response.create'});
+  assert.equal(h.sent.length, 3);
+  assert.equal(h.element('approval').hidden, true);
+});

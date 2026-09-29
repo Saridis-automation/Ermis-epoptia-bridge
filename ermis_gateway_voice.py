@@ -18,6 +18,11 @@ SESSION_SECONDS = 600
 def tool_schema():
     """Generate only reviewed actions; approval is never a model tool."""
     fields = {
+        "product_id": {"type": "integer", "minimum": 1, "maximum": 999999999999999},
+        "expected_current_name": {"type": "string", "minLength": 1, "maxLength": 255},
+        "new_name": {"type": "string", "minLength": 1, "maxLength": 255},
+        "expected_current_description": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "new_description": {"type": "string", "minLength": 1, "maxLength": 2000},
         "wol_id": {"type": "integer", "minimum": 1, "maximum": 999999999999999},
         "workorder_id": {"type": "integer", "minimum": 1, "maximum": 999999999999999},
         "service": {"type": "string", "enum": list(ALLOWED_SERVICES)},
@@ -25,13 +30,28 @@ def tool_schema():
         "workstation": {"type": "string", "minLength": 1, "maxLength": 80},
     }
     return [{"type": "function", "name": name,
-             "description": ("Propose a service restart; requires user button approval."
+             "description": ("Propose " + name.replace("_", " ") + "; requires user button approval. "
+                             "Currently disabled: confirmed execution fails closed without any Epoptia write."
+                             if name in {"update_product_name", "update_wol_description"} else
+                             "Propose installing fixed Epoptia VNC dependencies; requires user button approval. "
+                             "Makes no Epoptia data changes."
+                             if name == "install_epoptia_vnc_dependencies" else
+                             "Propose installing the fixed Playwright/Chromium Ubuntu runtime dependency set; "
+                             "requires user button approval. Makes no Epoptia data changes."
+                             if name == "install_chromium_dependencies" else
+                             "Propose a service restart; requires user button approval."
                              if action.write else
                              "Read existing MCP data. " + (
-                                 "Filter workstation WIP by name, e.g. Strantza. Includes paused steps."
-                                 if name == "station_wip" else name.replace("_", " "))),
+                                 "Filter live workstation WIP by name, e.g. LASER or Strantza. Includes paused steps."
+                                 if name == "station_wip" else
+                                 "Read live WIP across all workstations. Includes paused steps."
+                                 if name == "workstation_wip" else
+                                 "Read current production status for a WOL using its numeric wol_id."
+                                 if name == "wol_status" else name.replace("_", " "))),
              "parameters": {"type": "object", "properties": {
-                 field: fields[field] for field in action.fields},
+                 **{field: fields[field] for field in action.fields},
+                 **({"scope": {"type": "string", "enum": ["session", "dates", "smoke"],
+                               "default": "dates"}} if name == "epoptia_browser_inspect" else {})},
                  "required": list(action.fields), "additionalProperties": False}}
             for name, action in ACTIONS.items()]
 
@@ -43,6 +63,11 @@ def session_config():
             "tools": tool_schema(), "tool_choice": "auto",
             "instructions": (
                 "You are Ermis, a production assistant. Use tools for current facts; never invent status. "
+                "The provided tools are existing Ermis Gateway actions for live queries. "
+                "For 'τι τρέχει στο laser;' or 'what is running at the laser?' call station_wip "
+                "with workstation LASER. Use station_wip for a named workstation and workstation_wip "
+                "for WIP across all workstations. For WOL status questions call wol_status with wol_id; "
+                "ask for the numeric WOL ID if missing, never guess it. "
                 "For 'what is running in Strantza now?' call station_wip with workstation Strantza. "
                 "Describe started/in_progress versus paused entries accurately, mention truncation, "
                 "missing data and upstream failures. Empty results do not prove a machine is idle. "

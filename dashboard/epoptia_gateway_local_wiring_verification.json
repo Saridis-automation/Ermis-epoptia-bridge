@@ -1,0 +1,16 @@
+{
+  "cause_category": "unresolved_live_probe_blocked_by_sandbox_no_static_wiring_mismatch",
+  "configured_host": "127.0.0.1",
+  "configured_port": 8000,
+  "configured_path": "/mcp",
+  "listener_host": "127.0.0.1",
+  "listener_port": 8000,
+  "local_http_reachable": null,
+  "local_expected_route_ok": null,
+  "mismatch_found": false,
+  "fix_applied": false,
+  "tests_passed": 3,
+  "tests_failed": 0,
+  "implementation_ready": false,
+  "restart_required_services": []
+}

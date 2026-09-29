@@ -1,0 +1,10 @@
+{
+  "root_cause_category": "not_reproduced_offline_live_cause_unverified",
+  "fix_applied": false,
+  "tests_passed": 59,
+  "tests_failed": 0,
+  "clean_import_reader_available": true,
+  "production_overview_guard_reachable_due_to_wiring": false,
+  "get_wol_details_guard_reachable_due_to_wiring": false,
+  "restart_required": false
+}

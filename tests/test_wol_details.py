@@ -11,6 +11,48 @@ import epoptia_read
 
 
 class DetailsTests(unittest.TestCase):
+    def test_active_completion_null_and_absent(self):
+        row = {'workorderline_id': 3168, 'production_status': 'started'}
+        self.assertEqual(wol_details([row], 3168)['completion'], {'raw_fields': {}})
+        row.update(completionDate=None, completed_at=None, dbCompletionDate='')
+        self.assertEqual(wol_details([row], 3168)['completion']['raw_fields'], {
+            'completionDate': None, 'completed_at': None, 'dbCompletionDate': ''})
+
+    def test_completed_completion_values_are_raw(self):
+        fields = {
+            'completionDate': '2026-09-01',
+            'dbCompletionDate': '2026-09-01T12:30:00.123456Z',
+            'displayCompletionDate': '01/09/2026',
+            'completedAt': '2026-09-01T12:30:00+02:00',
+            'completed_at': '2026-09-01 12:30:00',
+            'completion_date': '2026-09-01T12:30:00-04:00',
+            'productionCompletionDate': '2026-09-01T12:30:00.123456789Z',
+            'completionTimestamp': 1788265800,
+            'production_completed_at': '2026-09-01T12:30:00Z',
+        }
+        for state in ('archived', 'completed'):
+            with self.subTest(state=state):
+                row = {'workorderline_id': 3168, 'state': state, **fields}
+                self.assertEqual(epoptia_read.wol_details([
+                    {'workorderline_id': 1, 'completionDate': '2000-01-01'}, row
+                ], 3168)['completion'], {'raw_fields': fields})
+
+    def test_completion_allowlist_bounds_and_safety(self):
+        row = {'workorderline_id': 3168,
+               'completionDate': {'nested': 'omit'},
+               'dbCompletionDate': ['omit'],
+               'displayCompletionDate': 'x' * 129,
+               'completedAt': 'token=synthetic',
+               'completed_at': float('inf'),
+               'completion_date': float('nan'),
+               'productionCompletionDate': 'https://example.invalid',
+               'completionTimestamp': True,
+               'completionDateSecret': 'omit', 'completionPercentage': 100,
+               'unrelated': 'omit',
+               'data': {'completionDate': '2000-01-01'},
+               'product': {'completedAt': '2000-01-01'}}
+        self.assertEqual(wol_details([row], 3168)['completion'], {'raw_fields': {}})
+
     def test_full_details_and_legacy_projection(self):
         row = {'workorderline_id': 3168, 'description': 'Custom cabinet',
                'client': {'name': 'Example client', 'email': 'omit'},

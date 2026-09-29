@@ -33,12 +33,29 @@ class GatewayTest(unittest.TestCase):
             if action.write:
                 continue
             args = {field: values[field] for field in action.fields}
-            self.assertEqual(self.request(action=name, arguments=args)["status"], "completed")
+            expected = "authenticated" if name == "epoptia_browser_access_check" else "completed"
+            self.invoke.return_value = {"ok": True, "status": expected}
+            self.assertEqual(self.request(action=name, arguments=args)["status"], expected)
             self.invoke.assert_awaited_with(action.server, action.tool, args)
 
     def test_natural_language(self):
         self.assertEqual(route("Show WOL details 123?"), ("wol_details", {"wol_id": 123}))
         self.assertEqual(self.request(text="show production overview")["status"], "completed")
+
+    def test_dashboard_status_and_confirmed_restart(self):
+        service = 'ermis-dashboard.service'
+        self.assertEqual(self.request(text='status service ' + service)['status'], 'completed')
+        self.invoke.assert_awaited_once_with('Ermis_System', 'ermis_service_status',
+                                             {'service': service})
+        self.invoke.reset_mock()
+        proposal = self.request(text='restart service ' + service)
+        self.assertEqual(proposal['status'], 'confirmation_required')
+        self.assertEqual(proposal['arguments'], {'service': service})
+        self.invoke.assert_not_awaited()
+        self.assertTrue(self.confirmation(proposal)['ok'])
+        self.invoke.assert_awaited_once_with('Ermis_System', 'ermis_service_control',
+                                             {'service': service, 'operation': 'restart'})
+        self.assertFalse(self.confirmation(proposal)['ok'])
 
     def test_denied_inputs_never_dispatch(self):
         for body in [dict(text="git status and restart service ermis-epoptia-mcp.service"),
@@ -51,6 +68,24 @@ class GatewayTest(unittest.TestCase):
                      dict(text="git status", approved=True)]:
             self.assertFalse(self.request(**body)["ok"])
         self.invoke.assert_not_called()
+
+    def test_login_supervisor_status_and_confirmed_restart(self):
+        service = 'ermis-epoptia-login.service'
+        self.assertTrue(self.request(action='service_status', arguments={'service': service})['ok'])
+        self.invoke.assert_awaited_once_with('Ermis_System', 'ermis_service_status', {'service': service})
+        self.invoke.reset_mock()
+        proposal = self.request(text='restart service ' + service)
+        self.assertEqual(proposal['status'], 'confirmation_required')
+        self.invoke.assert_not_awaited()
+        self.assertTrue(self.confirmation(proposal)['ok'])
+        self.invoke.assert_awaited_once_with('Ermis_System', 'ermis_service_control',
+                                             {'service': service, 'operation': 'restart'})
+        self.assertFalse(self.confirmation(proposal)['ok'])
+        self.invoke.reset_mock()
+        for unit in ('ermis-epoptia-login-supervisor.service', 'ermis-epoptia-login@x.service', '*'):
+            for action in ('service_status', 'restart_service'):
+                self.assertFalse(self.request(action=action, arguments={'service': unit})['ok'])
+        self.invoke.assert_not_awaited()
 
     def test_confirm_exact_action_once_and_session_bound(self):
         proposal = self.proposal()

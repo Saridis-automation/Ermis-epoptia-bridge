@@ -1,0 +1,9 @@
+{
+  "cause_category": "non_completed_status_allowlist_excluded_transitions",
+  "full_routing_source_used": "epoptia_read.fetch_wols -> epoptia_queries.read_wol_snapshot.wol_rows -> DirectReader._shared_wols -> CompletedJobsTracker.observe",
+  "persistent_state_preserved": true,
+  "tests_passed": 43,
+  "tests_failed": 0,
+  "implementation_ready": true,
+  "restart_required": true
+}

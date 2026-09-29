@@ -1,0 +1,35 @@
+{
+  "tests_run": 76,
+  "tests_passed": 76,
+  "tests_failed": 0,
+  "tests_errors": 0,
+  "tests_skipped": 0,
+  "test_suites": {
+    "test_completed_jobs_tracker": 40,
+    "test_dashboard": 8,
+    "test_dashboard_refresh": 8,
+    "test_dashboard_correctness": 8,
+    "test_dashboard_data_status": 7,
+    "test_routing_completion_candidates": 5
+  },
+  "shared_parser_reused": true,
+  "shared_parser": "epoptia_read.parse_routing_step",
+  "shared_parser_consumers": [
+    "mcp_server.get_wol_status",
+    "dashboard.completed_jobs.steps_from"
+  ],
+  "source": "shared_routing_parser_rest_scan",
+  "snapshot_source": "Complete /api/3.03/workorderlines scan via DirectReader._shared_wols",
+  "baseline_tests": "passed",
+  "transition_tests": "passed",
+  "dedup_tests": "passed",
+  "restart_tests": "passed",
+  "terminal_rows_without_routing_tests": "passed",
+  "full_32_page_rest_scan_test": "passed",
+  "existing_database_preservation_tests": "passed",
+  "implementation_ready": true,
+  "restart_required": true,
+  "service_restart_performed": false,
+  "verification_scope": "Local synthetic tracker/dashboard and get_wol_status compatibility tests; no live reads or production data changes",
+  "warnings": []
+}

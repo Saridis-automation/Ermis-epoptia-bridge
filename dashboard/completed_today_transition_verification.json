@@ -1,0 +1,14 @@
+{
+  "cause_category": "unverified_live_tracker_database_and_routing_snapshots_unavailable",
+  "fix_applied": false,
+  "tests_passed": 48,
+  "tests_failed": 0,
+  "implementation_ready": false,
+  "restart_required": false,
+  "baseline_preserved_test_ok": true,
+  "transition_event_test_ok": true,
+  "dedup_test_ok": true,
+  "restart_persistence_test_ok": true,
+  "newly_completed_without_prior_test_ok": true,
+  "incomplete_snapshot_no_mutation_test_ok": true
+}

@@ -6,3 +6,25 @@ __pycache__/
 *.pyc
 .DS_Store
 /.technical-reports/
+
+/dashboard/.cache/
+/node_modules/
+/.cache/
+
+# Epoptia browser enrollment artifacts (never migrate/read existing files).
+/EPOPTIA_AUTH_TOKEN
+/EPOPTIA_SECRET_REUSABLE_YES
+/EPOPTIA_MFA_UNKNOWN
+/epoptia-session.json
+/epoptia-storage-state.json
+/storage-state.json
+/storageState.json
+/auth.json
+/session.json
+/.auth/
+/playwright/.auth/
+/.epoptia-session/
+/.epoptia-browser/
+/epoptia-browser-profile/
+/epoptia-login-profile/
+/epoptia-console.secret

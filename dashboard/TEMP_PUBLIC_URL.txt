@@ -1,0 +1,4 @@
+No public URL created: cloudflared, ngrok, bore, lt, and localtunnel were not found on the executable search path or in this project. The local HTTP check to http://127.0.0.1:8010 also failed from this execution environment (curl exit 7; HTTP 000).
+Safest next option: have the server operator verify the dashboard is reachable locally and identify an existing tunnel client outside this project's permitted inspection scope. If none exists, installing a tunnel client requires a separately authorized task. Then use a temporary tunnel in a separate process. Do not expose port 8010 directly.
+No tunnel process was started; no PID or service was created or changed.
+VERIFICATION_FAILED: TUNNEL_PROCESS_NOT_FOUND, PAGE_FETCH_FAILED_PermissionError, HEALTH_FETCH_FAILED_PermissionError

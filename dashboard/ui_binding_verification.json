@@ -1,0 +1,64 @@
+{
+  "confirmed_cause": "The real / serves dashboard.js and polls /api/dashboard. Partial payloads were accepted, but the table only read urgent_orders, hiding undated active canonical orders; station state counters and source freshness were tooltip-only. No demonstrated cache defect or live-browser diagnosis.",
+  "implementation_changed": true,
+  "actual_changed_files": [
+    "dashboard/static/dashboard.js",
+    "dashboard/static/index.html",
+    "dashboard/validate.sh",
+    "tests/test_dashboard_browser.cjs",
+    "dashboard/ui_binding_verification.json"
+  ],
+  "exact_test_counts_run": {
+    "python_unittest_runs": [
+      {
+        "passed": 53,
+        "failed": 0
+      },
+      {
+        "passed": 53,
+        "failed": 0
+      }
+    ],
+    "dom_harness_runs": [
+      {
+        "passed": 2,
+        "failed": 1,
+        "reason": "Test clock mismatch corrected"
+      },
+      {
+        "passed": 6,
+        "failed": 0
+      },
+      {
+        "passed": 7,
+        "failed": 0
+      },
+      {
+        "passed": 7,
+        "failed": 0
+      }
+    ],
+    "initial_node_child_process_attempt": "Blocked by sandbox; no completed test count",
+    "final_suite": {
+      "python": 53,
+      "dom_cases": 7
+    },
+    "syntax": "dashboard.js, DOM harness and validate.sh passed"
+  },
+  "visible_fields_verified": {
+    "overall": "native_mean_order_progress_percent; remains native progress, not capacity",
+    "stations": "workstations[].name, wip_steps, running_steps, paused_steps, waiting_steps, unknown_steps; units=routing_steps; independent of null load_percent",
+    "orders": "urgent_orders when dated; otherwise canonical_orders.orders filtered lifecycle=unfinished, up to 3; id, code, customer, completion_percent, deadline",
+    "today": "today.active_work, overdue_work, completed_today; zero differs from null",
+    "source_notes": "field_status, field_observed_at, sources last_success/failure_reason/stale; canonical_orders.undated_unfinished_orders",
+    "clock_logo": "existing local clock and logo behavior retained"
+  },
+  "fields_still_unavailable": [
+    "capacity/load_percent",
+    "unverified whole-order deadlines and complete overdue count",
+    "verified completion history / completed_today"
+  ],
+  "simulated_or_real_browser": "Simulated DOM, full assets fetched through real Flask / route and API test client; production provider/serializer fed synthetic reader inputs. Not live browser proof. No installed browser executable or Playwright/Puppeteer found.",
+  "activation_required": "Refresh the page: existing Flask send_static_file reads HTML/JS from disk with no-store. No backend change, restart, deployment or cache-policy change required.",
+  "protected_code_unchanged": true
+}

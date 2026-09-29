@@ -1,0 +1,41 @@
+{
+  "archive_filter_fix_applied": true,
+  "tests_passed": 139,
+  "tests_failed": 2,
+  "workstation_filter_test_ok": true,
+  "browser_harness_status": "Main Node VM/minimal-DOM harness fails at its first case: sources.production_overview.transport is undefined, expected direct_python. Data-status harness passes 3 checks. Playwright and Puppeteer are unavailable; no real-browser layout verification.",
+  "ui_issues_found_count": 1,
+  "runtime_issues_found_count": 0,
+  "restart_required": true,
+  "scope": "Local source change only. No deployment or service restart performed. Runtime issue count covers confirmed findings only and does not establish live health.",
+  "fix": "Trim whitespace before case-folding production_status or fallback status, using the existing TERMINAL set and the normalization already used by completed_jobs.routing_from. Exclude terminal WOLs before routing aggregation only; shared full-scan rows and deadline candidates remain intact.",
+  "files_changed": [
+    "dashboard/stations.py",
+    "tests/test_dashboard_correctness.py",
+    "dashboard/workstation_filter_verification.json"
+  ],
+  "test_results": {
+    "dashboard_python_suite": {"passed": 86, "failed": 1},
+    "completed_jobs_tracker_suite": {"passed": 43, "failed": 0},
+    "completed_today_persistence_suite": {"passed": 7, "failed": 0},
+    "data_status_dom_harness": {"passed": 3, "failed": 0},
+    "main_dom_harness": {"passed": 0, "failed": 1},
+    "javascript_syntax": "passed",
+    "git_diff_check": "passed"
+  },
+  "regression_evidence": "Before the fix, new terminal-normalization cases failed and the full-scan test counted running/paused/waiting as 2/2/2 instead of 1/1/1. After the fix, all station tests pass, including all existing ACTIVE lifecycles, all five terminal aliases on both lifecycle fields, case/whitespace normalization, missing terminal routing, and raw history/deadline preservation. No completion events were added outside isolated synthetic test stores.",
+  "remaining_test_failures": [
+    "test_bounded_derived_candidates_and_strict_dates expects 2 deadline dates but the existing read_wol_snapshot retains all 5 distinct dates for roll-forward selection; deadline code and this test were not changed.",
+    "tests/test_dashboard_browser.cjs fails on missing transport metadata before validating rendered metric values. Its legacy fixture/assertions require follow-up; no UI success is inferred from it."
+  ],
+  "ui_findings": [
+    "index.html references static/assets/saridis-logo.png, which is absent; JavaScript provides a placeholder fallback."
+  ],
+  "layout_review_unverified_risks": [
+    "Main and bottom grid tracks use implicit minimum widths; table cells lack long-token wrapping. Wide content may expand the grid despite inner horizontal scrolling.",
+    "Wide-screen main has a fixed 100vh height; tall status text and station content may overflow vertically. Requires rendered viewport checks."
+  ],
+  "runtime_verification": "Local Flask route, cache, refresh, failure recovery and persistence checks exercised with synthetic inputs. GET /health on existing 127.0.0.1:8010 was blocked by PermissionError; live runtime health and deployed counts remain unverified. No settings, environment variables, credentials or production caches were read.",
+  "preservation": "Before/after hashes match for ermis_gateway.py, ermis_gateway_voice.py, tests/test_gateway_voice.py, tests/test_gateway_browser.cjs, dashboard/completed_jobs.py, dashboard/completion.py and epoptia_queries.py. Existing unrelated working-tree changes were preserved. Completed Today implementation and persistence logic were not modified.",
+  "review": "Reviewed git diff against the captured initial stations.py and the before/after regression-test diff because these files were already untracked. git diff --check and untracked-file whitespace checks are clean."
+}

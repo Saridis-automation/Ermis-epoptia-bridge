@@ -1,0 +1,362 @@
+"""One-time, administrator-invoked installer. Never imported by the application."""
+import hashlib
+import errno
+import ast
+from contextlib import contextmanager, ExitStack
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+import warnings
+
+WRAPPER = Path('/usr/local/sbin/ermis-admin')
+RULE = Path('/etc/sudoers.d/ermis-admin')
+RECEIPT = Path('/usr/local/sbin/.ermis-admin-receipt')
+RULE_BYTES = b'ermis ALL=(root) NOPASSWD: NOSETENV: /usr/local/sbin/ermis-admin\n'
+ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'HOME': '/root'}
+# Reviewed wrapper with the fixed Chromium and Epoptia VNC dependency actions.
+# Unknown revisions cannot establish capability by executing privileged code.
+DIAGNOSE_SOURCE_SHA256 = '3ff7bcb922b9ddd34117129199ea8f67c978ef61e3d6b8a45b9e950bdfe75b35'
+DIAGNOSE_WRAPPER_SHA256 = '0f2c03b07f4638a8e6d3ca29b469ca7b88844cf97230b31dfa330f9d52610f4d'
+
+
+def diagnostic_read(path, mode=None):
+    # Do not follow links, block on special files, or update access timestamps.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOATIME)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError()
+        if mode is not None and (info.st_uid != 0 or info.st_gid != 0
+                                 or stat.S_IMODE(info.st_mode) != mode):
+            raise ValueError()
+        data = stream.read(1024 * 1024 + 1)
+        if len(data) > 1024 * 1024:
+            raise ValueError()
+        return data
+
+
+def diagnose():
+    """Return fixed codes only; never invoke installed code or installer paths."""
+    state = 'unknown'
+    try:
+        if os.geteuid() != 0:
+            return 'unknown', state
+        for path in (WRAPPER, RULE, RECEIPT):
+            trusted_parent(path)
+        present = []
+        for path in (WRAPPER, RECEIPT, RULE):
+            try:
+                present.append(path.lstat())
+            except FileNotFoundError:
+                present.append(None)
+        count = sum(info is not None for info in present)
+        state = 'partial-install' if 0 < count < 3 else 'unknown'
+        try:
+            source = diagnostic_read(Path(__file__).with_name('ermis-admin'))
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                compile(source, '<source>', 'exec')
+                tree = ast.parse(source)
+        except Exception:
+            return 'source-invalid', state
+        for info, name, mode in zip(present, ('wrapper', 'helper', 'sudoers'),
+                                    (0o755, 0o600, 0o440)):
+            if info is None:
+                return name + '-missing', state
+            if not stat.S_ISREG(info.st_mode):
+                return ('wrapper-type' if name == 'wrapper' else
+                        'helper-owner-mode' if name == 'helper' else 'sudoers-invalid'), state
+            if (info.st_uid != 0 or info.st_gid != 0 or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != mode):
+                return (name + '-owner-mode' if name != 'sudoers' else 'sudoers-invalid'), state
+        installed = diagnostic_read(WRAPPER, 0o755)
+        receipt = diagnostic_read(RECEIPT, 0o600)
+        digest = hashlib.sha256(installed).hexdigest()
+        if (hashlib.sha256(source).hexdigest() != digest
+                or receipt != digest.encode('ascii')):
+            return 'source-installed-mismatch', state
+        if diagnostic_read(RULE, 0o440) != RULE_BYTES:
+            return 'sudo-rule-mismatch', state
+        try:
+            # Validate only the fixed fragment; no global config/include traversal.
+            check_sudoers(RULE)
+        except subprocess.CalledProcessError:
+            return 'sudoers-invalid', state
+        literals = {node.value for node in ast.walk(tree)
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+        if not {'browser', 'check-chromium-dependencies',
+                'install-chromium-dependencies',
+                'install-epoptia-vnc-dependencies'} <= literals:
+            return 'action-missing', state
+        if digest != DIAGNOSE_WRAPPER_SHA256:
+            return 'unknown', state
+        return 'installed-valid', 'installed-valid'
+    except Exception:
+        return 'unknown', state
+
+
+class BootstrapError(ValueError):
+    """Only fixed stage identifiers may reach the command-line diagnostic."""
+
+
+@contextmanager
+def stage(identifier):
+    try:
+        yield
+    except BootstrapError:
+        raise
+    except Exception:
+        raise BootstrapError(identifier) from None
+
+
+def trusted_parent(path):
+    for directory in reversed((path.parent, *path.parent.parents)):
+        info = directory.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError('Untrusted installation directory')
+
+
+def check_sudoers(path=None):
+    subprocess.run(['/usr/sbin/visudo', '-c'] + (['-f', str(path)] if path else []),
+                   check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL, env=ENV, cwd='/', timeout=30)
+
+
+@contextmanager
+def staged_file(path, data, mode):
+    fd, name = tempfile.mkstemp(prefix='.ermis-bootstrap-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            os.fchmod(stream.fileno(), mode)
+            os.fchown(stream.fileno(), 0, 0)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if path == RULE:
+            with stage('B_SUDOERS_CANDIDATE'):
+                check_sudoers(Path(name))
+        yield Path(name)
+    finally:
+        if os.path.lexists(name):
+            os.unlink(name)
+
+
+def publish(path, data, mode):
+    # Exclusive link publication never overwrites an existing file or symlink.
+    with staged_file(path, data, mode) as candidate:
+        os.link(candidate, path)
+
+
+def installed_contents():
+    contents = tuple(diagnostic_read(path, mode) for path, mode in
+                     ((WRAPPER, 0o755), (RECEIPT, 0o600), (RULE, 0o440)))
+    wrapper, receipt, rule = contents
+    if (receipt != hashlib.sha256(wrapper).hexdigest().encode('ascii')
+            or rule != RULE_BYTES):
+        raise ValueError('Untrusted installation')
+    compile(wrapper, '<installed>', 'exec')
+    return contents
+
+
+def upgrade(data, previous):
+    paths = ((WRAPPER, 0o755), (RECEIPT, 0o600))
+    contents = (data, hashlib.sha256(data).hexdigest().encode('ascii'))
+    with ExitStack() as stack:
+        with stage('B_UPGRADE_STAGE'):
+            backups = [stack.enter_context(staged_file(path, old, mode))
+                       for (path, mode), old in zip(paths, previous)]
+            candidates = [stack.enter_context(staged_file(path, new, mode))
+                          for (path, mode), new in zip(paths, contents)]
+        changed = []
+        try:
+            with stage('B_UPGRADE_REPLACE'):
+                for (path, _), candidate, backup in zip(paths, candidates, backups):
+                    os.replace(candidate, path)
+                    changed.append((path, backup))
+            with stage('B_SUDOERS_FINAL'):
+                check_sudoers()
+            with stage('B_INSTALLED_VERIFY'):
+                if installed_contents() != (*contents, RULE_BYTES):
+                    raise ValueError('Installed result mismatch')
+        except BaseException:
+            with stage('B_CLEANUP'):
+                for path, backup in reversed(changed):
+                    os.replace(backup, path)
+            raise
+
+
+def read_owned(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_nlink != 1:
+            raise ValueError('Untrusted installed file')
+        data = stream.read(1024 * 1024)
+        if stream.read(1):
+            raise ValueError('Oversized installed file')
+        return data
+
+
+def main(action):
+    with stage('B_PRIVILEGE'):
+        if os.geteuid() != 0:
+            raise ValueError('Administrator invocation required')
+    with stage('B_PARENT_TRUST'):
+        for path in (WRAPPER, RULE, RECEIPT):
+            trusted_parent(path)
+    # Serialize installers on an existing trusted directory inode.
+    import fcntl
+    with stage('B_LOCK'):
+        lock = os.open(WRAPPER.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with stage('B_LOCK'):
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if action == 'rollback':
+            with stage('B_ROLLBACK_VERIFY'):
+                digest = read_owned(RECEIPT).decode('ascii')
+                if hashlib.sha256(read_owned(WRAPPER)).hexdigest() != digest or read_owned(RULE) != RULE_BYTES:
+                    raise ValueError('Installation changed; manual review required')
+            with stage('B_ROLLBACK_REMOVE'):
+                RULE.unlink()  # Revoke privilege first.
+                WRAPPER.unlink()
+                RECEIPT.unlink()
+            with stage('B_SUDOERS_FINAL'):
+                check_sudoers()
+            return
+        if action != 'install':
+            raise BootstrapError('B_ARGUMENT')
+        with stage('B_EXISTING_INSTALL'):
+            previous = None
+            if any(p.exists() or p.is_symlink() for p in (WRAPPER, RULE, RECEIPT)):
+                previous = installed_contents()
+        with stage('B_SOURCE'):
+            data = diagnostic_read(Path(__file__).with_name('ermis-admin'))
+            compile(data, 'ermis-admin', 'exec')
+            if hashlib.sha256(data).hexdigest() != DIAGNOSE_WRAPPER_SHA256:
+                raise ValueError('Unreviewed source')
+        with stage('B_SUDOERS_INITIAL'):
+            check_sudoers()
+        if previous is not None:
+            if previous[0] == data:
+                return  # Verified current installation; preserve all inodes.
+            upgrade(data, previous)
+            return
+        created = []
+        try:
+            for path, content, mode, identifier in (
+                    (WRAPPER, data, 0o755, 'B_PUBLISH_WRAPPER'),
+                    (RECEIPT, hashlib.sha256(data).hexdigest().encode('ascii'), 0o600, 'B_PUBLISH_RECEIPT'),
+                    (RULE, RULE_BYTES, 0o440, 'B_PUBLISH_RULE')):
+                with stage(identifier):
+                    publish(path, content, mode)
+                created.append(path)
+            with stage('B_SUDOERS_FINAL'):
+                check_sudoers()
+            with stage('B_INSTALLED_VERIFY'):
+                if installed_contents() != (data, hashlib.sha256(data).hexdigest().encode('ascii'), RULE_BYTES):
+                    raise ValueError('Installed result mismatch')
+        except BaseException:
+            with stage('B_CLEANUP'):
+                for path in reversed(created):
+                    path.unlink()
+            raise
+    finally:
+        os.close(lock)
+
+
+def login_operation(action):
+    # Isolated Python does not put the script directory on sys.path.
+    import runpy
+    login = runpy.run_path(str(Path(__file__).with_name('login_bootstrap.py')))
+    if action == 'diagnose':
+        problems = login['source_blockers']() or login['installed_blockers']() or login['configuration_blockers']() or login['dependency_blockers']() or login['socket_blockers']()
+        return problems[0] if problems else None
+    try:
+        login['install'](action)
+    except login['LoginInstallError'] as error:
+        raise BootstrapError(str(error)) from None
+
+
+def apparmor_diagnose():
+    # Source-only diagnostics; never enter an installer transaction.
+    try:
+        if os.geteuid() != 0:
+            raise ValueError()
+        namespace = {'__name__': 'apparmor_diagnostics'}
+        source = Path(__file__).with_name('login_apparmor.py')
+        import json
+        manifest = json.loads(diagnostic_read(source.with_name('login_manifest.json')))
+        data = diagnostic_read(source)
+        if hashlib.sha256(data).hexdigest() != manifest['admin_bootstrap/login_apparmor.py']:
+            raise ValueError()
+        exec(compile(data, '<apparmor-diagnostics>', 'exec'), namespace)
+        return namespace['diagnose'](source.parent.parent)
+    except Exception:
+        return 'apparmor-unknown', 'manual-review-required'
+
+
+def cli(args):
+    if args in (['diagnose'], ['diagnose', 'apparmor']):
+        # No installer imports, sudoers validation, dependency or socket probes.
+        result = ('apparmor-source-invalid', 'other', 'unknown', 'retry-source-fix-required',
+                  'diagnostic-module=invalid', 'expected-binding=indeterminate',
+                  'primary=DIAGNOSTIC_MODULE_FAILURE', 'retry=blocked:diagnostic-module-invalid')
+        try:
+            source = Path(__file__).with_name('login_diagnose.py')
+            try:
+                data = diagnostic_read(source)
+            except OSError as error:
+                bucket = {errno.ENOENT: 'missing', errno.EACCES: 'access-denied',
+                          errno.EPERM: 'access-denied', errno.ELOOP: 'symlink',
+                          errno.ENOTDIR: 'unsafe-path'}.get(error.errno, 'io-error')
+                result = result[:4] + ('diagnostic-module=' + bucket, 'expected-binding=indeterminate',
+                                      'primary=DIAGNOSTIC_MODULE_FAILURE', 'retry=blocked:diagnostic-module-' + bucket)
+                raise
+            if hashlib.sha256(data).hexdigest() != DIAGNOSE_SOURCE_SHA256:
+                raise ValueError()
+            namespace = {'__name__': 'login_diagnose', '__file__': str(source)}
+            exec(compile(data, '<verified-diagnose>', 'exec'), namespace)
+            result = namespace['diagnose'](scoped=True) if len(args) == 2 else namespace['diagnose']()
+        except Exception:
+            pass
+        print('unknown')
+        print('unknown')
+        print(result[0])
+        print('no-retry' if result[0] == 'apparmor-ready' else {'retry-forbidden': 'manual-review-required', 'retry=blocked:insufficient-transaction-evidence': 'manual-review-required',
+               'retry-source-fix-required': 'source-fix-required', 'retry=blocked': 'manual-review-required',
+               'retry=eligible_after_atomic_recheck': 'manual-review-required'}[result[3]])
+        print('substage-' + result[1])
+        print('state-' + result[2])
+        print(result[3])
+        for phase in result[4:]:
+            print(phase)
+        return 0 if result[0] == 'apparmor-ready' else 1
+    try:
+        if len(args) != 1 or args[0] not in ('install', 'rollback'):
+            raise BootstrapError('B_ARGUMENT')
+        # First gate, before admin installation or any privileged mutation.
+        import runpy
+        runpy.run_path(str(Path(__file__).with_name('login_bootstrap.py')))['validate_source']()
+        if args[0] == 'rollback':
+            with stage('B_LOGIN_ROLLBACK'):
+                login_operation('rollback')
+        main(args[0])
+        if args[0] == 'install':
+            with stage('B_LOGIN_INSTALL'):
+                login_operation('install')
+        print('Private login socket enabled; no existing services were restarted.'
+              if args[0] == 'install' else
+              'Bootstrap-owned login components removed; saved Epoptia session preserved; no existing services were restarted.')
+        return 0
+    except Exception as error:
+        identifier = str(error) if isinstance(error, BootstrapError) else 'B_UNKNOWN'
+        print('Bootstrap failed; review installation state before retrying. '
+              + identifier, file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(cli(sys.argv[1:]))

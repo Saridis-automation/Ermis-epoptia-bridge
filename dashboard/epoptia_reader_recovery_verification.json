@@ -1,0 +1,10 @@
+{
+  "cause_category": "eager_details_import_coupling_production_cause_unconfirmed",
+  "reader_import_ok": true,
+  "production_overview_binding_ok": true,
+  "wol_details_binding_ok": true,
+  "focused_tests_passed": 60,
+  "focused_tests_failed": 0,
+  "implementation_ready": true,
+  "restart_required": true
+}

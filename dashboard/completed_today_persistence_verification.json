@@ -1,0 +1,11 @@
+{
+  "cause_category": 1,
+  "persistence_fix_applied": true,
+  "tests_passed": 50,
+  "tests_failed": 0,
+  "baseline_survives_restart_test_ok": true,
+  "tracked_steps_survive_restart_test_ok": true,
+  "events_survive_restart_test_ok": true,
+  "implementation_ready": true,
+  "restart_required": true
+}

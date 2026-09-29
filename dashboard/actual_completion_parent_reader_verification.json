@@ -1,0 +1,11 @@
+{
+  "parser_exact_label_verified": true,
+  "scheduled_label_excluded": true,
+  "tests_passed": 52,
+  "tests_failed": 0,
+  "implementation_ready": true,
+  "restart_required_services": [
+    "ermis-epoptia-mcp.service",
+    "ermis-system-mcp.service"
+  ]
+}

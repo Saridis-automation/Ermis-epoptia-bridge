@@ -1,0 +1,16 @@
+{
+  "epoptia_read.py": "818bf0bad76cbbdcaa83f0e02cb8be7268362982249c71482633f4f5e225a7d4",
+  "mcp_server.py": "f73edd6cbf3f795511284ef777ef18b145891686f6497394fb9ad50d10261c7e",
+  "ermis_gateway_voice.py": "793259931da826050ddfb7438030d9fd084dcbb11b1b794fd20c0747abeabdde",
+  "ermis_gateway.py": "400c8d7105a9602ab214ec1dbec94554cf2dfe6d60d6e7a434629d2360f5c829",
+  "ermis_gateway_server.py": "3cc9ada793a9d8d3efbaf41b065cce4daef5462b45899638a4aa7d8a578c1432",
+  "ermis_system_server.py": "df223a311431a14b45d56f815ba45c4482de0e819c860323e28d7c42f9d49d88",
+  "service_control.py": "c0b6a58c1b34769d940bea622bd7090720ade78fcae97195e3c1913117787a23",
+  "sanitized_report.py": "a28d4359da6860bd9c730fcfd1c5bb09e3628277f83fd8b7ee09d9fd3cb77fc1",
+  "technical_reports.py": "5e61c3ea2328440f8cd3a71a4db23942fb2aabeacbc196584e1ad55771862ab0",
+  "dashboard/ermis-dashboard.service.in": "a6cd24f1f4080ac0bbfd818332fcecd1843ce6ae03e1de424e2bf7821b283c15",
+  "dashboard/run.sh": "fa6a4da343e3364ad9950b62d28613d12313c0e7044bcc6d13f4d811b7ac5b3a",
+  "dashboard/static/index.html": "c6de27b0f478a88c4593911ca3b255d0c3870849d808a9dd1022363ee819d741",
+  "dashboard/static/dashboard.css": "a7edad55bccda73ee6be07e93cb4cbdc488e88182e2feb96f7c1ec8eae26fd9f",
+  "dashboard/static/dashboard.js": "8bdb89b4e66604deeb4fff4a24c9e5b835885a4c955cdb56122a441f1b137077"
+}

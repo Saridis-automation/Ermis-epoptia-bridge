@@ -1,0 +1,11 @@
+{
+  "ermis_gateway_voice.py": "793259931da826050ddfb7438030d9fd084dcbb11b1b794fd20c0747abeabdde",
+  "gateway_static/voice.js": "266ea90d2ddcf71e9ad51e0f3d55a5c24c3d4bb6fcd7a2f6c2abb0dd52e16c7f",
+  "gateway_static/voice.css": "2cd453caa0aed5886fec79e92d0d2efab427b8af3c9a8bfa714aaffd8d5d5323",
+  "service_control.py": "c0b6a58c1b34769d940bea622bd7090720ade78fcae97195e3c1913117787a23",
+  "mcp_server.py": "f73edd6cbf3f795511284ef777ef18b145891686f6497394fb9ad50d10261c7e",
+  "epoptia_read.py": "818bf0bad76cbbdcaa83f0e02cb8be7268362982249c71482633f4f5e225a7d4",
+  "tests/test_gateway_voice.py": "92cf2781a7989177a34bd32d11be7caec32d43848eef1c1ba70de7c10244179a",
+  "tests/test_service_control.py": "be1dcdd99978480423e09dfe9b6379aebe8d36d33c8f3af3f214ea898673914b",
+  "dashboard/ermis-dashboard.service.in": "a6cd24f1f4080ac0bbfd818332fcecd1843ce6ae03e1de424e2bf7821b283c15"
+}

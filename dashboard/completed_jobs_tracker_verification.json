@@ -1,0 +1,15 @@
+{
+  "storage_kind": "SQLite",
+  "stable_identity_strategy": "WOL id + explicit upstream step/route/job id; fallback WOL id + workstation + job name + explicit route order or array position. Ambiguous identities reject the scan.",
+  "baseline_behavior": "First observation records status only; historical completed steps produce no event. One event per step identity, transactionally deduplicated.",
+  "tests_passed": 130,
+  "tests_failed": 1,
+  "implementation_ready": true,
+  "restart_required": true,
+  "warnings": [
+    "Existing deadline regression test_bounded_derived_candidates_and_strict_dates fails (5 dates versus 2), reproduced with the pre-change snapshot function.",
+    "Fallback identity depends on stable route order/position; upstream route restructuring without IDs cannot be reliably distinguished.",
+    "Completions between observations or before activation cannot be reconstructed. Keep dashboard/.cache/completed_jobs.sqlite3 across restarts.",
+    "System Python lacks Flask; regression tests ran with the project virtual environment. No services restarted."
+  ]
+}

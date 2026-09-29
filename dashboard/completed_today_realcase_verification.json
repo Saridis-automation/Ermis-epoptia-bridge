@@ -1,0 +1,40 @@
+{
+  "cause_category": "undetermined_missing_persisted_live_case_evidence",
+  "fix_applied": false,
+  "regression_test_ok": false,
+  "tests_passed": 133,
+  "tests_failed": 2,
+  "restart_required": false,
+  "verification_status": "blocked_missing_live_evidence_and_validation_failures",
+  "verification_scope": "Local offline tests only; default tracker paths redirected into temporary project directories; provisioning and unmocked HTTP blocked.",
+  "evidence": {
+    "reported_case": "MBY/order 725 progress 22.22 -> 27.78 while completed_today stayed 0; user-reported, not independently verified",
+    "default_tracker_path": "dashboard/.cache/completed_jobs.sqlite3",
+    "default_tracker_exists_before_tests": false,
+    "tracker_database_search": "No SQLite/database-named files found within the permitted project directory",
+    "persisted_dashboard_cache_observed_at": "2026-09-09T06:10:03.161792+00:00",
+    "persisted_dashboard_cache_source_rows_available": false,
+    "persisted_dashboard_cache_completion_diagnostics_available": false,
+    "persisted_pre_change_transition_evidence_available": false
+  },
+  "inspection": {
+    "live_schema_and_step_rows": "Unavailable: no live tracker database located in the permitted workspace",
+    "writer_and_transaction_order": "Code compares the previous persisted status before writing the new status; event insertion and step update share a BEGIN IMMEDIATE transaction",
+    "identity_and_status": "Code uses hashed WOL/upstream identities with aliases, or unique labels; incoming status is stripped and casefolded; live identity comparison cannot be verified without persisted rows",
+    "api_serialization": "The core provider reads tracker.summary and the adapter serializes its total and workstation breakdown into top-level completed_today; this path passes local tracker API tests",
+    "actual_runtime_cause": "Undetermined; missing workspace evidence does not prove the live service lacks a database"
+  },
+  "validation": {
+    "python_tracker_and_dashboard": {"run": 134, "passed": 133, "failed": 1, "errors": 0, "skipped": 0},
+    "python_failure": "test_dashboard_connection.ConnectionTests.test_bounded_derived_candidates_and_strict_dates: expected 2 deadline dates, received 5",
+    "dashboard_browser_harness": "FAIL: tests/test_dashboard_browser.cjs:118 expected source transport direct_python, received undefined",
+    "javascript_syntax": "PASS",
+    "dashboard_data_status_browser": "3 checks passed",
+    "count_note": "tests_passed counts Python tests; tests_failed includes the Python failure and browser harness failure. Auxiliary JavaScript checks are reported separately."
+  },
+  "regression_test_note": "No exact runtime regression added because the real persisted failure has not been reproduced; existing tracker regressions passed on isolated test stores",
+  "production_events_written": false,
+  "backfill_performed": false,
+  "implementation_changed": false,
+  "required_evidence": "An in-project live tracker database or sanitized persisted schema and before/after routing rows for order 725, with observation times and tracker diagnostics"
+}

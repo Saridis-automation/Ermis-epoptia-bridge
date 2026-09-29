@@ -1,0 +1,27 @@
+{
+  "implemented": true,
+  "runtime_calls_both_sources": true,
+  "targeted_tests": {
+    "count": 17,
+    "passed": 17,
+    "failed": 0,
+    "errors": 0
+  },
+  "relevant_existing_tests": {
+    "count": 112,
+    "passed": 112,
+    "failed": 0,
+    "errors": 0
+  },
+  "live_read_attempted": false,
+  "live_read_success": false,
+  "activation_required_services": [
+    "ermis-dashboard.service"
+  ],
+  "remaining_unverified_items": [
+    "Dashboard activation is pending; no services were restarted.",
+    "Live authenticated deadline mapping for orders 701 and 718 is pending; credential access and live reads were not performed in this job.",
+    "Completion history and capacity remain independently unverified."
+  ],
+  "protected/unrelated_components_unchanged": true
+}

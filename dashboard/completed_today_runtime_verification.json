@@ -1,0 +1,18 @@
+{
+  "cause_category": "tracker_fed_capacity_planning_rows_without_guaranteed_routing",
+  "runtime_wiring_fix_applied": true,
+  "snapshot_source": "GET /api/3.03/workorderlines via epoptia_read.fetch_wols; full raw wol_rows from DirectReader._shared_wols, shared with workstation_wip and production_overview",
+  "tests_passed": 80,
+  "tests_failed": 0,
+  "implementation_ready": true,
+  "restart_required": true,
+  "synthetic_tracked_step_count": 32,
+  "verification_scope": "Local synthetic tests only; no live scan or service restart performed",
+  "test_suites": {
+    "test_completed_jobs_tracker": 39,
+    "test_dashboard_refresh": 8,
+    "test_uniform_wol_deadlines": 10,
+    "test_deadline_envelope": 23
+  },
+  "validation_note": "Project venv passed all selected tests. Initial system Python run lacked Flask for three API tests; rerun in project venv passed."
+}

@@ -13,6 +13,7 @@ import epoptia_read as read
 class NativeProgressTests(unittest.TestCase):
     def setUp(self):
         self.session = requests.Session()
+        self.session.get = Mock(return_value=Mock(status_code=200, text='<html></html>'))
         self.session.post = lambda *args, **kwargs: read.requests.post(*args, **kwargs)
         factory = patch.object(read.requests, 'Session', return_value=self.session)
         factory.start()
@@ -186,7 +187,9 @@ class NativeProgressTests(unittest.TestCase):
         exec(compile(ast.Module(body=[node], type_ignores=[]), '<test>', 'exec'), scope)
         tool = asyncio.run(server.list_tools())[0]
         self.assertEqual(tool.name, 'inspect_workorder_progress')
-        self.assertEqual(set(tool.input_schema['properties']), {'workorder_id'})
+        self.assertEqual(set(tool.input_schema['properties']),
+                         {'workorder_id', 'include_actual_production_completion'})
+        self.assertFalse(tool.input_schema['properties']['include_actual_production_completion']['default'])
         self.assertEqual(tool.input_schema['required'], ['workorder_id'])
         self.assertEqual(tool.input_schema['properties']['workorder_id']['type'], 'integer')
         with patch.object(read.requests, 'post', return_value=Mock(

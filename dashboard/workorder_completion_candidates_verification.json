@@ -1,0 +1,26 @@
+{
+  "fields_allowlisted": [
+    "/completionDate",
+    "/dbCompletionDate",
+    "/displayCompletionDate",
+    "/completedAt",
+    "/completed_at",
+    "/completion_date",
+    "/actualCompletionDate",
+    "/productionCompletionDate",
+    "/workorder/completionDate",
+    "/workorder/dbCompletionDate",
+    "/workorder/displayCompletionDate",
+    "/workorder/completedAt",
+    "/workorder/completed_at",
+    "/workorder/completion_date",
+    "/workorder/actualCompletionDate",
+    "/workorder/productionCompletionDate"
+  ],
+  "tests_passed": 33,
+  "tests_failed": 0,
+  "implementation_ready": true,
+  "restart_required_services": [
+    "ermis-epoptia-mcp.service"
+  ]
+}

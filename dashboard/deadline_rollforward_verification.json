@@ -1,0 +1,11 @@
+{
+  "tests_passed": 52,
+  "tests_failed": 0,
+  "rule_implemented": true,
+  "deadline_701": "2026-09-18",
+  "deadline_718_as_of_2026_09_13": "2026-09-21",
+  "all_past_keeps_latest": true,
+  "multiple_dates_no_conflict": true,
+  "overdue_semantics_verified": true,
+  "restart_required": true
+}

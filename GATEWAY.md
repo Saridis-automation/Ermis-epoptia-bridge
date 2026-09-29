@@ -42,9 +42,38 @@ This wrapper owns one process-local Gateway instance in Ermis_System. Its
 confirmation IDs cannot be used in the separate browser gateway or survive a
 process restart; run a single worker. Unlike the voice flow, MCP confirmation
 IDs are returned to the tool caller. Existing voice approval handling is unchanged.
-Only the existing allowlisted restart is a write; arbitrary destructive actions
-are unsupported. Inspect nested `result.ok`/`accepted` and never automatically
-retry `outcome_unknown`.
+Writes include the allowlisted restart and `install_chromium_dependencies`.
+The latter accepts exactly `arguments: {}` and, after confirmation, invokes only
+the installed admin wrapper's fixed `browser install-chromium-dependencies`
+action. It installs the fixed Playwright/Chromium Ubuntu runtime dependency set
+and makes no Epoptia data changes. No package names, commands or extra arguments
+are accepted. No standalone installer MCP tool is registered.
+
+Installer responses contain only `ok` and a fixed `status` code. Missing, old,
+unreadable or unrecognized wrapper source returns
+`admin_wrapper_action_unavailable` without execution. The capability check reads
+only the installed wrapper source and recognizes its reviewed fixed dispatch
+branch; it never imports the source. Launch failures return
+`admin_wrapper_execution_unavailable`; nonzero exit returns
+`admin_wrapper_action_failed`. The wrapper does not distinguish authorization,
+platform or package-manager failures. Output is discarded. A timeout returns
+`outcome_unknown`, since a privileged child may still be running. Never
+automatically retry. For other actions inspect nested `result.ok`/`accepted`.
+
+`chromium_runtime_smoke` accepts exactly `arguments: {}` without confirmation.
+Invoke it through `ermis_gateway_execute` in Ermis_System: only that server
+dispatches the worker locally, inheriting its user and service restrictions.
+Other gateway instances return `service_context_required` without launching it.
+It reuses the project's Playwright executable resolver, opens only `about:blank`,
+blocks browser requests and sockets, and loads no Epoptia session. Browser files
+use a disposable project-local directory; the worker receives only fixed runtime
+settings, not the service's credentials. A 20-second worker deadline plus a
+2-second reap limit bounds execution; cleanup kills its dedicated process group
+and removes temporary files, including on cancellation. No packages are installed.
+Responses contain only `ok` and an allowlisted `status`: `completed`,
+`playwright_missing`, `chromium_missing`, `chromium_dependencies_missing`,
+`runtime_permission_denied`, `launch_failed`, `timeout`, `busy`, or
+`service_context_required`. No worker output, paths, or exception text is exposed.
 
 Activation requires a separately authorized Ermis_System restart and connector
 tool-discovery refresh using its existing protected tunnel route. No tunnel,
@@ -124,7 +153,7 @@ status, job status and job logs. Gateway code calls existing MCP endpoints only.
 There is no arbitrary shell, URL, job launch, commit, edit, comment or production
 write tool. Approved service names reuse `service_control.ALLOWED_SERVICES`.
 
-The only existing write action is `restart_service`. Requesting it creates a
+The existing service write action is `restart_service`. Requesting it creates a
 proposal with the exact service and a 120-second, opaque, session-bound token;
 nothing executes yet. In the voice flow, approval tokens never enter model messages. Explicit user
 button approval consumes the pending record atomically before MCP execution.
@@ -189,3 +218,64 @@ needed. A real browser/OpenAI/MCP end-to-end check remains a deployment-time tas
 See [GATEWAY_DEPLOYMENT.md](GATEWAY_DEPLOYMENT.md) for the review-only proposed
 separate service definition and acceptance steps. No service was started,
 stopped, restarted, installed or deployed by this change.
+
+Epoptia admin-write foundation
+-----------------------------
+
+Two distinct structured actions are available through the existing gateway/MCP
+request and confirm flow: `update_product_name` takes exactly `product_id`,
+`expected_current_name`, `new_name`; `update_wol_description` takes exactly
+`wol_id`, `expected_current_description`, `new_description`. Both are writes,
+with exact target/old/new arguments in the proposal and no request-stage dispatch.
+IDs are integers 1–999999999999999 (not booleans); expected/new strings must be
+nonblank and control-free, at most 255 characters for names or 2000 for descriptions.
+These are local policy limits. Extra fields are rejected.
+
+Confirmed execution is deliberately disabled: the local adapter returns
+`ok:false`, `status:auth_required`, `write_performed:false`. It never contacts
+upstream MCP or a browser. Its future read-only transport seam checks session/CSRF
+readiness and exact current-value equality; even a match returns
+`write_transport_unverified`. No authenticated write client exists yet. This is
+not success, and confirmation does not enable a network write. Product master
+names and WOL descriptions are independent. See [EPOPTIA_FUNCTION_MAP.md](EPOPTIA_FUNCTION_MAP.md).
+
+
+## Private browser enrollment foundation
+
+Use the public actions documented below. Legacy `epoptia_browser_login_*`
+aliases use identical contracts. Login approval never authorizes Epoptia
+business-data writes. All four actions return `login_not_ready` locally and
+perform no state access, process launch or cleanup while prerequisites are missing.
+
+Both existing browser site inspectors share persistent exclusive locking,
+eight-second navigation spacing, a sixty-second cooldown after ten navigations,
+and a stop circuit on HTTP/visible 403, 429 or 5xx. Login expiry/redirects return
+`login_required`. Circuits and crash-left locks require deliberate operator
+recovery; nothing retries or steals a lock automatically. Gateway outputs never
+include console secrets or browser session contents. Deployment/reload is a
+separate authorized operation and was not performed by this implementation.
+
+## User-assisted login readiness
+
+System gateway allowlist: `epoptia_login_status` (read-only),
+`epoptia_login_start`, `epoptia_login_finalize`, `epoptia_login_stop`
+(each write requires separate confirmation). Start accepts only optional integer
+`ttl_minutes` from 1 to 5, default 5; the other actions accept `{}` only.
+Legacy `epoptia_browser_login_*` aliases remain. All currently return
+`login_not_ready` without state access or runtime operations. See
+[EPOPTIA_BROWSER.md](EPOPTIA_BROWSER.md) and
+[EPOPTIA_LOGIN_READINESS.marker](EPOPTIA_LOGIN_READINESS.marker) for exact blockers.
+Bootstrap installation is required eventually but its login installer is not
+ready; reinstalling the current bootstrap will not enable enrollment.
+
+### Offline login sandbox probe
+
+`epoptia_login_sandbox_probe` (and `epoptia_browser_login_sandbox_probe`)
+accepts exactly `{}` and runs without write confirmation. It uses the installed
+private login socket/service with a fresh disposable profile, only `about:blank`,
+network/DNS guards, sandbox enabled, a 10-second ready dwell and a 20-second
+worker deadline. It cannot access saved authentication or Epoptia. Results are
+closed booleans/enums; raw Chromium stderr is discarded in memory. Login and
+probe concurrency is one. See [diagnostic details](EPOPTIA_BROWSER.md).
+The source change requires a separately authorized trusted bootstrap update;
+this task does not install, restart, activate or run the probe.

@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(systemctl status:*)",
+      "Bash(systemctl is-active:*)",
+      "Bash(systemctl list-units:*)",
+      "Bash(systemctl list-unit-files:*)",
+      "Bash(journalctl:*)",
+      "Bash(ss -ltnp:*)",
+      "Bash(curl -s http://127.0.0.1:*)",
+      "Bash(curl -s --max-time * http://127.0.0.1:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Bash(cat .env:*)",
+      "Bash(cat ./.env:*)"
+    ]
+  }
+}

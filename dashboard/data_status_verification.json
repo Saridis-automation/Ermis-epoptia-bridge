@@ -1,0 +1,13 @@
+{
+  "tests_passed": 119,
+  "tests_failed": 2,
+  "status_logic_updated": true,
+  "freshness_policy": "Existing 120-second maximum snapshot age, inclusive at 120 seconds; collector interval remains 45 seconds. Required sources: canonical order source and workstation_wip. Optional completion coverage and worker/failure state do not determine availability.",
+  "refreshing_with_fresh_snapshot_online": true,
+  "transient_failure_with_fresh_snapshot_online": true,
+  "one_source_unavailable_partial": true,
+  "no_sources_available_offline": true,
+  "deadline_701_regression_passed": true,
+  "deadline_718_regression_passed": true,
+  "restart_required": true
+}

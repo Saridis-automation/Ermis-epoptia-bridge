@@ -1,0 +1,22 @@
+........................................................................................................
+----------------------------------------------------------------------
+Ran 104 tests in 2.023s
+
+OK
+PASS initial partial payload: real counts, native zero, unknown optional fields
+PASS scheduled second poll changes visible values
+PASS stale failed orders retain last-good while stations update
+PASS stale failed stations retain last-good while orders update to unknown progress
+PASS verified empty census renders zero, not unknown or fake urgency
+PASS verified deadlines retain existing urgent table semantics
+PASS calendar dates format without timezone shifts; missing dates stay unknown
+PASS exactly eight approved stations with ten discrete bottom-up blocks and independent stars
+PASS star boundaries, future timestamps and missing history
+PASS urgent orders contain progress bars and red overdue dates
+PASS urgent panel caps at three truthful rows and keeps future dates neutral
+PASS HTTP failure retains displayed data and announces disconnect
+PASS missing logo fallback is visible and handles image errors
+DOM harness: 13 cases passed (not a real browser).
+3 dashboard data-status browser checks passed
+PASS factory 1920x1080 DOM/CSS layout contract
+SKIP rendered viewport checks: Playwright is unavailable

@@ -1,0 +1,13 @@
+{
+  "tests_passed": 50,
+  "tests_failed": 0,
+  "implementation_ready": true,
+  "restart_required_services": [
+    "ermis-epoptia-mcp.service"
+  ],
+  "services_restarted": [],
+  "validation": "Local synthetic parser, native progress, and completion candidate tests; no live requests.",
+  "warnings": [
+    "System Python lacks mcp; final validation passed using the existing project venv."
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "cause_category": "undetermined_live_failure_no_static_protocol_mismatch",
+  "deterministic_mismatch_found": false,
+  "gateway_transport_before": {
+    "transport": "MCP SDK streamable HTTP",
+    "method": "POST",
+    "url": "http://127.0.0.1:8000/mcp",
+    "accept": ["application/json", "text/event-stream"],
+    "content_type": "application/json",
+    "sequence": ["initialize", "notifications/initialized", "tools/call", "tools/list for result schema validation"],
+    "session_handling": "SDK captures MCP-Session-Id when supplied and includes it in subsequent requests",
+    "request_ids": "SDK generates distinct ids and correlates responses",
+    "connect_timeout_seconds": 30,
+    "read_timeout_seconds": 30,
+    "overall_timeout_seconds": 30
+  },
+  "server_transport": {
+    "configured_transport": "streamable-http",
+    "path": "/mcp",
+    "json_response": true,
+    "stateless_http": true,
+    "user_reported_live_get": "HTTP 200 text/event-stream remains open",
+    "live_configuration_verified": false
+  },
+  "fix_applied": false,
+  "tests_passed": 6,
+  "tests_failed": 0,
+  "implementation_ready": false,
+  "restart_required_services": []
+}

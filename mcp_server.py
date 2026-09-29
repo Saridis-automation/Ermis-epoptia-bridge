@@ -84,6 +84,7 @@ def get_wol_status(wol_id: int) -> dict:
     - production status
     - target date
     - completed production steps
+      with bounded completion_candidates at exact WOL source paths (unverified)
     - steps currently in progress
     - steps not yet started
     - progress: supplied routing completed-step percentage, independent of lifecycle;
@@ -104,27 +105,14 @@ def get_wol_status(wol_id: int) -> dict:
     not_started = []
 
     routing = wol.get("erp_routing")
-    for step in routing if isinstance(routing, list) else []:
-        if not isinstance(step, dict):
+    for step_index, step in enumerate(routing if isinstance(routing, list) else []):
+        item = epoptia_read.parse_routing_step(step)
+        if item is None:
             continue
-
-        job_tag = step.get("job_tag")
-
-        if isinstance(job_tag, dict):
-            job_name = job_tag.get("name")
-        else:
-            job_name = None
-
-        item = {
-            "workstation": step.get("workstationName"),
-            "job": job_name,
-            "status": step.get("status"),
-            "qty_done": step.get("qty_done")
-        }
-
-        status = step.get("status")
+        status = item['status']
 
         if status == "completed":
+            item.update(epoptia_read.routing_completion_details(step, step_index))
             completed.append(item)
 
         elif status in ["started", "paused", "in_progress"]:
@@ -167,19 +155,42 @@ def _read_query(query, **filters):
 
 
 @mcp.tool()
-def inspect_workorder_progress(workorder_id: int) -> dict:
+def inspect_workorder_progress(workorder_id: int,
+                               include_actual_production_completion: bool = False) -> dict:
     """Read native overall workorder progress from capacity-planning WOLs.
 
     Matches nested workorder.id and returns nested workorder.progress after
     pagination and consistency checks. Root WOL progress is not overall progress.
     Missing, conflicting or incomplete results return a safe diagnostic.
+    Always return actual_production_completion from the exact full label on the
+    parent page, with a safe reason when unavailable. The include flag is retained
+    for compatibility and no longer disables this read.
+    Abbreviated labels and WOL completionDate/dbCompletionDate/
+    displayCompletionDate are scheduled targets, never actual completion.
     """
     try:
         return {"ok": True, **epoptia_read.inspect_workorder_progress(
             BASE_URL, HEADERS, workorder_id,
-            username=WEB_USERNAME, password=WEB_PASSWORD)}
+            username=WEB_USERNAME, password=WEB_PASSWORD,
+            include_actual_production_completion=include_actual_production_completion)}
     except ValueError:
         return {"ok": False, "error": "workorder_id must be an integer from 1 to 2147483647"}
+
+
+@mcp.tool()
+def calendar_target_dates(wol_ids: list[int] | None = None,
+                          workorder_ids: list[int] | None = None, limit: int = 200) -> dict:
+    """Read date-only calendar snapshot (60s TTL); never initiate login or writes.
+
+    Existing authenticated progress reads populate it through GET /planning/calendar.
+    Missing authentication and client rendering are independent date-source statuses.
+    Filters contain at most 200 positive IDs; limit is 1–200.
+    """
+    from calendar_target_dates import calendar_target_dates as read_calendar
+    try:
+        return read_calendar(wol_ids, workorder_ids, limit)
+    except ValueError:
+        return {'ok': False, 'error': 'invalid_calendar_filters'}
 
 
 @mcp.tool()
@@ -189,12 +200,25 @@ def get_wol_details(wol_id: int) -> dict:
     Returns description, client name, quantity, target_day, status/state and
     embedded WOL/product dimensions, notes/remarks, custom fields and attributes.
     Source paths retain upstream values/units; WOL specifications override product
-    defaults. Only the existing workorderlines read endpoint is used: absent
+    defaults. The existing workorderlines read supplies details: absent
     product data is not fetched separately or invented. Unsafe values are omitted;
     missing metadata is null. Technical data is bounded to depth 8, 200 leaves,
     50 entries/container and 2,000 characters/value, with truncation reported.
+    Temporary report_discovery adds bounded authenticated page-route and endpoint
+    metadata only; diagnostic failures never discard the details result.
     """
-    return _read_query(epoptia_read.wol_details, wol_id=wol_id)
+    result = _read_query(epoptia_read.wol_details, wol_id=wol_id)
+    if result.get('ok'):
+        # TEMPORARY: metadata discovery runs in this service's reader context.
+        # Keep all diagnostic failures separate from the working details read.
+        try:
+            from report_discovery import runtime_discovery
+            result['report_discovery'] = runtime_discovery(BASE_URL, WEB_USERNAME, WEB_PASSWORD)
+        except Exception:
+            result['report_discovery'] = {
+                'status': 'discovery_unavailable', 'landing_paths': [],
+                'route_candidates': [], 'endpoint_candidates': [], 'notes': []}
+    return result
 
 
 @mcp.tool()
@@ -223,20 +247,21 @@ def list_wols(wol_id: int | None = None, client: str | None = None,
 
 
 @mcp.tool()
-def production_overview() -> dict:
+def production_overview(dashboard: bool = False) -> dict:
     """Aggregate all WOL pages: counts by production_status/state (missing =
     unknown), total WOLs, numeric quantity sum and quantity coverage, dated WOLs
     and past-target WOLs (all statuses; UTC today). Quantities are not converted
     between units. Includes mean native progress of distinct production/standby
     workorders; invalid or conflicting progress is excluded. Incomplete native
-    scans return null aggregates. Returns totals only, with no raw records.
+    scans return null aggregates. Includes the canonical whole-order census.
+    Optional dashboard mode skips the separate WOL summary read.
     """
-    result = _read_query(epoptia_read.overview)
+    # Dashboard needs only the native census; avoid a second all-history WOL scan.
+    result = {"ok": True} if dashboard else _read_query(epoptia_read.overview)
     if not result.get('ok'):
         return result
-    result.update(epoptia_read.active_production_progress(
-        BASE_URL, username=WEB_USERNAME, password=WEB_PASSWORD))
-    return result
+    from epoptia_queries import production_overview as read_overview
+    return read_overview(BASE_URL, username=WEB_USERNAME, password=WEB_PASSWORD, result=result, headers=HEADERS)
 
 
 @mcp.tool()
@@ -256,14 +281,22 @@ def due_wols(mode: str = "due_soon", days: int = 7, as_of: str | None = None,
 
 @mcp.tool()
 def workstation_wip(workstation: str | None = None, step: str | None = None,
-                    limit: int = 50) -> dict:
-    """List routing steps with status started/paused/in_progress, including WOL
+                    limit: int = 50, dashboard: bool = False) -> dict:
+    """Optional dashboard mode returns a complete versioned station census.
+    Legacy default: list routing steps with status started/paused/in_progress, including WOL
     summaries. workstation filters workstationName; step filters job_tag.name,
     both case-insensitive substrings. Only supplied routing data is used;
     missing stations group as unknown. Counts by workstation cover all matching
     steps before limit (1–200 steps, default 50, upstream order). A WOL may occur
     more than once. Returns selected fields, match totals and truncation.
     """
+    if dashboard:
+        # Complete compact census, using this process's existing authenticated reader.
+        # Filter/limit arguments cannot silently narrow the dashboard population.
+        if workstation is not None or step is not None:
+            return {'ok': False, 'source_error': 'unsupported_dashboard_filter'}
+        from epoptia_queries import workstation_census
+        return workstation_census(BASE_URL, HEADERS)
     return _read_query(epoptia_read.workstation_wip, workstation=workstation,
                        step=step, limit=limit)
 

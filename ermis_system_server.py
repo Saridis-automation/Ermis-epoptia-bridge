@@ -6,11 +6,13 @@ import socket
 import subprocess
 from typing import Any, Literal
 from mcp.server.mcpserver import MCPServer
-from ermis_gateway import Gateway
+from ermis_gateway import Gateway, validate
+from ermis_gateway_cache import call_cached_production
 import codex_jobs
 import technical_reports
 import service_control
 import git_housekeeping
+import epoptia_browser
 
 mcp = MCPServer(
     "Ermis_System",
@@ -21,7 +23,36 @@ mcp = MCPServer(
 
 PROJECT_DIR = "/home/ermis/projects/epoptia-bridge"
 ALLOWED_SERVICES = service_control.ALLOWED_SERVICES
-gateway = Gateway()
+
+
+async def _gateway_invoke(server, tool, arguments):
+    if (server, tool) == ("Ermis_System", "epoptia_browser_access_check"):
+        validate("epoptia_browser_access_check", arguments)
+        from epoptia_browser_access_check import run
+        return await run()
+    if (server, tool) == ('Ermis_System', 'chromium_runtime_smoke'):
+        validate('chromium_runtime_smoke', arguments)
+        from chromium_runtime_smoke import run
+        return await run()
+    return await call_cached_production(server, tool, arguments)
+
+
+gateway = Gateway(invoke=_gateway_invoke)
+
+
+@mcp.tool(structured_output=True)
+async def ermis_epoptia_browser_inspect(
+    page: Literal['workorders', 'workorderlines', 'production_report', 'daily_analysis'] = 'production_report',
+) -> dict[str, Any]:
+    """Inspect a fixed Epoptia page using an existing private browser session.
+
+    GET-only allowlist; no login, clicks, form submission, caller URLs or scripts.
+    Returns bounded DOM counts, recognized field names and request/schema metadata,
+    never page text, values, cookies or headers. Missing setup returns
+    session_unavailable; expired sessions return authentication_required.
+    Blocked requests and omitted fields mean discovery may be incomplete.
+    """
+    return await epoptia_browser.inspect(page)
 
 
 @mcp.tool(structured_output=True)
@@ -32,11 +63,44 @@ async def ermis_gateway_execute(operation: Literal["request", "confirm"], payloa
     Use a unique conversation session_id (16-128 letters, digits, _ or -).
     Actions: production_overview, wol_status, wol_details, workorder_progress,
     list_wols, due_wols, workstation_wip, station_wip, health, git_status,
-    service_status, job_status, job_logs, restart_service. Arguments follow the
+    service_status, job_status, job_logs, restart_service, epoptia_browser_inspect,
+    install_chromium_dependencies, install_epoptia_vnc_dependencies,
+    chromium_runtime_smoke, epoptia_browser_access_check,
+    update_product_name, update_wol_description,
+    epoptia_login_status, epoptia_login_diagnose, epoptia_login_sandbox_probe,
+    epoptia_login_start, epoptia_login_finalize,
+    epoptia_login_stop. Login status/diagnose/sandbox_probe are read-only; start/finalize/stop require
+    separate action-time confirmation. Only start accepts optional ttl_minutes
+    (integer 1-5, default 5); all other login arguments must be empty.
+    Enrollment currently fails closed with fixed readiness blocker categories.
+    Legacy epoptia_browser_login_* aliases retain the same policy.
+    update_product_name requires product_id, expected_current_name, new_name.
+    update_wol_description requires wol_id, expected_current_description,
+    new_description. Both are confirmation-required writes. IDs are positive
+    integers up to 999999999999999; values are nonblank strings, maximum 255
+    characters for names or 2000 for descriptions, without control characters.
+    Confirmed execution currently fails closed with auth_required; no verified
+    authenticated write transport exists and no Epoptia write is performed.
+    install_epoptia_vnc_dependencies is a confirmed write accepting exactly {}.
+    Installs only missing x11vnc, novnc, websockify, and xauth through the fixed
+    admin wrapper. No upgrades, removals, listeners or Epoptia data changes.
+    Returns only ok and status: completed, already_installed, or failed.
+    A failed result may have an uncertain outcome; do not automatically retry.
+    epoptia_browser_access_check accepts exactly {}, runs unprivileged here,
+    and returns only ok and a fixed access state. No login or data writes.
+    chromium_runtime_smoke is an unprivileged read accepting exactly {}. It runs
+    only here in the System service context, visiting about:blank with no session
+    or network access, and returns only ok and a fixed sanitized status.
+    install_chromium_dependencies is a confirmed write accepting exactly {}:
+    installs the fixed Playwright/Chromium Ubuntu runtime dependency set through
+    the installed admin wrapper, with no Epoptia data changes. Returns only ok
+    and status; admin_wrapper_action_unavailable means support was not verified.
+    epoptia_browser_inspect accepts only optional scope: session, dates (default),
+    or smoke; returns sanitized read-only browser diagnostics. Arguments follow the
     gateway contract: wol_status/wol_details require wol_id; workorder_progress
     requires workorder_id; station_wip requires workstation; service_status and
     restart_service require service; job_status/job_logs require job_id. Other
-    actions require {}. Unknown actions and extra fields are rejected.
+    actions not described above require {}. Unknown actions and extra fields are rejected.
 
     Writes return confirmation_required without executing. Show the exact
     proposal to the user and wait for explicit approval before confirm.

@@ -42,9 +42,16 @@ class GatewayMCPTest(unittest.IsolatedAsyncioTestCase):
             if action.write:
                 continue
             args = {field: values[field] for field in action.fields}
-            result = await self.call(action=name, arguments=args)
-            self.assertEqual(result["status"], "completed")
-            self.assertEqual(result["result"], {"ok": True, "accepted": False})
+            if name in {"chromium_runtime_smoke", "epoptia_browser_access_check"}:
+                status = "authenticated" if name == "epoptia_browser_access_check" else "completed"
+                self.invoke.return_value = {"ok": True, "status": status}
+                result = await self.call(action=name, arguments=args)
+                self.assertEqual(result, {"ok": True, "status": status})
+            else:
+                self.invoke.return_value = {"ok": True, "accepted": False}
+                result = await self.call(action=name, arguments=args)
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["result"], {"ok": True, "accepted": False})
             self.invoke.assert_awaited_with(action.server, action.tool, args)
         await self.call(text="show production overview")
         self.invoke.assert_awaited_with("Epoptia_MES", "production_overview", {})

@@ -1,0 +1,226 @@
+#!/usr/bin/python3 -I
+"""Fixed maintenance interface. Edit policy only during administrator review."""
+import fcntl
+import json
+import os
+import platform
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import syslog
+import tempfile
+
+# Fail closed until reviewed. Never allow packages/services that execute user-owned
+# code as root, or destinations interpreted as root commands/configuration.
+PACKAGES = frozenset()
+VNC_PACKAGES = ("x11vnc", "novnc", "websockify", "xauth")
+# Fixed Playwright 1.63.0 nativeDeps ubuntu24.04-x64 tools + chromium.
+# Kept separate from PACKAGES: callers cannot select, remove, or append packages.
+CHROMIUM_PACKAGES = (
+    "xvfb", "fonts-noto-color-emoji", "fonts-unifont", "libfontconfig1",
+    "libfreetype6", "xfonts-cyrillic", "xfonts-scalable", "fonts-liberation",
+    "fonts-ipafont-gothic", "fonts-wqy-zenhei", "fonts-tlwg-loma-otf",
+    "fonts-freefont-ttf", "libasound2t64", "libatk-bridge2.0-0t64",
+    "libatk1.0-0t64", "libatspi2.0-0t64", "libcairo2", "libcups2t64",
+    "libdbus-1-3", "libdrm2", "libgbm1", "libglib2.0-0t64", "libnspr4",
+    "libnss3", "libpango-1.0-0", "libx11-6", "libxcb1", "libxcomposite1",
+    "libxdamage1", "libxext6", "libxfixes3", "libxkbcommon0", "libxrandr2",
+)
+SERVICES = frozenset()
+PORTS = frozenset()  # Exact strings, e.g. "443/tcp".
+FILES = {}  # Logical name -> absolute destination; non-executable text files only.
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C",
+       "HOME": "/root", "SYSTEMD_PAGER": "", "SYSTEMD_COLORS": "0",
+       "DEBIAN_FRONTEND": "noninteractive"}
+LIMIT = 65536
+
+
+def plan(args):
+    if not args or any(not re.fullmatch(r"[A-Za-z0-9_./-]{1,200}", x)
+                       or ".." in x or x.startswith("-") for x in args):
+        raise ValueError("invalid request")
+    if args == ["browser", "check-chromium-dependencies"]:
+        return []  # Status-only capability probe; no maintenance command.
+    if args == ["browser", "install-epoptia-vnc-dependencies"]:
+        return ["/usr/bin/apt-get", "--assume-yes", "--no-remove",
+                "--no-upgrade", "--no-install-recommends",
+                "-o", "DPkg::Lock::Timeout=60", "install", *VNC_PACKAGES]
+    if args == ["package", "update"]:
+        return ["/usr/bin/apt-get", "update"]
+    if args == ["browser", "install-chromium-dependencies"]:
+        return ["/usr/bin/apt-get", "--assume-yes", "--no-remove",
+                "--no-upgrade", "--no-install-recommends", "install", *CHROMIUM_PACKAGES]
+    if len(args) == 3 and args[0] == "package" and args[1] in {"install", "remove"} and args[2] in PACKAGES:
+        return ["/usr/bin/apt-get", "--assume-yes", "--no-remove", args[1], args[2]] if args[1] == "install" else ["/usr/bin/apt-get", "--assume-yes", "remove", args[2]]
+    if len(args) == 3 and args[0] == "service" and args[1] in {"status", "start", "stop", "restart", "reload"} and args[2] in SERVICES:
+        return ["/usr/bin/systemctl", "--no-pager", args[1], args[2]]
+    if args == ["nginx", "test"]:
+        return ["/usr/sbin/nginx", "-t"]
+    if args == ["nginx", "reload"]:
+        return ["/usr/bin/systemctl", "reload", "nginx.service"]
+    if args in (["certbot", "renew"], ["certbot", "dry-run"]):
+        return ["/usr/bin/certbot", "renew", "--non-interactive"] + (["--dry-run"] if args[1] == "dry-run" else [])
+    if args == ["ufw", "status"]:
+        return ["/usr/sbin/ufw", "status"]
+    if len(args) == 3 and args[0] == "ufw" and args[1] in {"allow", "delete"} and args[2] in PORTS:
+        return ["/usr/sbin/ufw"] + (["--force", "delete", "allow"] if args[1] == "delete" else ["allow"]) + [args[2]]
+    if len(args) == 4 and args[0] == "journal" and args[1] in SERVICES and re.fullmatch(r"[1-9][0-9]{0,2}", args[2]) and re.fullmatch(r"[1-9][0-9]{0,3}", args[3]) and int(args[2]) <= 200 and int(args[3]) <= 1440:
+        return ["/usr/bin/journalctl", "--no-pager", "--quiet", "--unit", args[1], "--lines", args[2], "--since", args[3] + " minutes ago", "--output=json", "--output-fields=MESSAGE,PRIORITY,__REALTIME_TIMESTAMP"]
+    if len(args) == 3 and args[0] == "file" and args[1] in {"install", "backup", "restore"} and args[2] in FILES:
+        return None
+    raise ValueError("request not allowlisted")
+
+
+def trusted_directory(path):
+    path = Path(path)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("invalid destination")
+    for parent in reversed((path, *path.parents)):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError("untrusted directory")
+
+
+def read_file(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1 or info.st_mode & 0o022:
+            raise ValueError("untrusted file")
+        data = stream.read(LIMIT + 1)
+        validate_data(data)
+        return data
+
+
+def validate_data(data):
+    if len(data) > LIMIT or b"\0" in data:
+        raise ValueError("invalid content")
+    data.decode("utf-8")
+
+
+def atomic_write(path, data):
+    trusted_directory(path.parent)
+    if path.is_symlink():
+        raise ValueError("symlink destination")
+    if path.exists():
+        read_file(path)
+    fd, temporary = tempfile.mkstemp(prefix=".ermis-admin-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def file_action(operation, name):
+    destination = Path(FILES[name])
+    trusted_directory(destination.parent)
+    backup = destination.with_name(destination.name + ".ermis-admin-backup")
+    if operation == "backup":
+        if backup.exists() or backup.is_symlink():
+            raise ValueError("backup already exists")
+        atomic_write(backup, read_file(destination))
+    elif operation == "restore":
+        atomic_write(destination, read_file(backup))
+    else:
+        data = sys.stdin.buffer.read(LIMIT + 1)
+        validate_data(data)
+        # Require a recoverable original before replacing an existing file.
+        if destination.exists():
+            read_file(backup)
+        atomic_write(destination, data)
+
+
+def audit(event, request=None):
+    # No rejected arguments, file contents, child output, or caller environment.
+    syslog.openlog("ermis-admin", syslog.LOG_PID, syslog.LOG_AUTHPRIV)
+    syslog.syslog(syslog.LOG_NOTICE, json.dumps({"event": event, "request": request}))
+
+
+def run(command, journal=False):
+    # Only journal readers get a file-size limit: applying it to maintenance
+    # commands would also limit package/configuration files they write.
+    import resource
+    def limits():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (LIMIT, LIMIT))
+    from contextlib import nullcontext
+    with (tempfile.TemporaryFile(dir="/run") if journal else nullcontext(subprocess.DEVNULL)) as output:
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=output,
+                                stderr=subprocess.DEVNULL, env=ENV, shell=False,
+                                timeout=900, cwd="/", preexec_fn=limits if journal else None)
+        if journal:
+            output.seek(0)
+            # JSON encoding prevents terminal control-sequence injection.
+            print(json.dumps({"journal": output.read(LIMIT).decode("utf-8", "replace")}))
+        if result.returncode:
+            raise RuntimeError("command failed")
+
+
+def vnc_package_available(package):
+    if package not in VNC_PACKAGES:
+        raise ValueError("invalid package")
+    if package == "xauth" and shutil.which("xauth", path=ENV["PATH"]):
+        return True
+    # Fixed-format query; only a bounded status is read, never package output.
+    with tempfile.TemporaryFile(dir="/run") as output:
+        result = subprocess.run(
+            ["/usr/bin/dpkg-query", "-W", "-f=${db:Status-Status}", package],
+            stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL,
+            env=ENV, shell=False, timeout=5, cwd="/")
+        output.seek(0)
+        return result.returncode == 0 and output.read(32) == b"installed"
+
+
+def main(args):
+    request = None
+    try:
+        command = plan(args)
+        request = args
+        if os.geteuid() != 0:
+            raise ValueError("root required")
+        if args == ["browser", "check-chromium-dependencies"]:
+            return 0
+        if args == ["browser", "install-chromium-dependencies"]:
+            release = platform.freedesktop_os_release()
+            if (release.get("ID"), release.get("VERSION_ID"), platform.machine()) != (
+                    "ubuntu", "24.04", "x86_64"):
+                raise ValueError("unsupported Chromium dependency platform")
+        audit("begin", request)
+        # Installed wrapper is root-owned; lock its inode without creating a path.
+        with open(__file__, "rb") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if args == ["browser", "install-epoptia-vnc-dependencies"]:
+                missing = [p for p in VNC_PACKAGES if not vnc_package_available(p)]
+                if not missing:
+                    audit("success", request)
+                    return 10  # Fixed adapter protocol: already installed.
+                command = command[:-len(VNC_PACKAGES)] + missing
+            if command is None:
+                file_action(args[1], args[2])
+            else:
+                if args == ["nginx", "reload"]:
+                    run(["/usr/sbin/nginx", "-t"])
+                run(command, args[0] == "journal")
+        audit("success", request)
+        return 0
+    except Exception:
+        audit("rejected-or-failed", request)
+        print("Maintenance request rejected or failed.", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

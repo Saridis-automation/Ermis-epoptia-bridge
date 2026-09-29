@@ -1,0 +1,12 @@
+{
+  "name": "epoptia-bridge-local-browser-tests",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  },
+  "scripts": {
+    "browser:install": "PLAYWRIGHT_BROWSERS_PATH=.cache/ms-playwright playwright install chromium",
+    "test:browser-smoke": "node tests/playwright_smoke.cjs"
+  }
+}

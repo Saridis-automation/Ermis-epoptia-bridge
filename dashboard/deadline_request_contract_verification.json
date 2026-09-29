@@ -1,0 +1,12 @@
+{
+  "discovered_request_method": null,
+  "discovered_request_path": null,
+  "parameter_names_only": [],
+  "contract_source": "repo_source",
+  "tests_passed": 86,
+  "tests_failed": 0,
+  "workorder_701_expected_deadline": "2026-09-18",
+  "runtime_wiring_verified": false,
+  "restart_required": false,
+  "remaining_live_verification": true
+}

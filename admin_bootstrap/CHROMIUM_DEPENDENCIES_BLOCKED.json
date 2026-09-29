@@ -1,0 +1,14 @@
+{
+  "status": "blocked",
+  "installation_attempted": false,
+  "blocker": "Task prohibits sudo and all operations outside the project; current process is not root and the project wrapper requires root.",
+  "installed_wrapper_verified": false,
+  "prepared_action": "browser install-chromium-dependencies",
+  "dependency_source": "Installed Playwright 1.63.0 nativeDeps ubuntu24.04-x64 tools plus chromium",
+  "host_platform_independently_verified": false,
+  "local_chromium_smoke": "failed",
+  "application_runtime_project_only": "chromium_missing",
+  "external_browser_cache_inspected": false,
+  "chromium_dependencies_missing_resolved": false,
+  "next_step": "Separately authorized administrator review and installation of the fixed wrapper action and packages, followed by local and application smoke checks. No service restart was performed."
+}

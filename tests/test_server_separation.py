@@ -10,13 +10,14 @@ from mcp.server.mcpserver import MCPServer
 import ermis_system_server as system
 
 
-BUSINESS = {'get_wol_status', 'get_wol_details', 'list_wols',
+BUSINESS = {'calendar_target_dates', 'get_wol_status', 'get_wol_details', 'list_wols',
             'production_overview', 'due_wols', 'workstation_wip',
             'inspect_workorder_progress'}
 ADMIN = {'ermis_git_status', 'ermis_git_commit', 'ermis_service_status', 'ermis_service_control',
          'ermis_health', 'ermis_codex_start', 'ermis_codex_inspect',
          'ermis_codex_status', 'ermis_codex_wait', 'ermis_codex_logs',
-         'ermis_technical_report_read', 'ermis_gateway_execute'}
+         'ermis_technical_report_read', 'ermis_gateway_execute',
+         'ermis_epoptia_browser_inspect'}
 
 
 class SeparationTest(unittest.TestCase):
@@ -26,10 +27,11 @@ class SeparationTest(unittest.TestCase):
         self.assertEqual(set(tool.input_schema['properties']), {'message'})
         self.assertEqual(tool.input_schema['required'], ['message'])
 
-    def test_health_reports_all_four_services(self):
+    def test_health_reports_all_five_services(self):
         expected = (
             'ermis-epoptia-mcp.service', 'ermis-epoptia-tunnel.service',
             'ermis-system-mcp.service', 'ermis-system-tunnel.service',
+            'ermis-dashboard.service',
         )
         active = dict(ok=True, LoadState='loaded', ActiveState='active')
         git = dict(ok=True, clean=True)
@@ -105,7 +107,8 @@ class SeparationTest(unittest.TestCase):
     def test_entrypoint_import_boundaries(self):
         for filename, forbidden in [
             ('ermis_system_server.py', {'mcp_server', 'epoptia_read', 'dotenv'}),
-            ('mcp_server.py', {'ermis_system_server', 'codex_jobs', 'technical_reports', 'service_control'}),
+            ('mcp_server.py', {'ermis_system_server', 'codex_jobs', 'technical_reports', 'service_control', 'epoptia_browser'}),
+            ('epoptia_browser.py', {'mcp_server', 'epoptia_read', 'dotenv'}),
         ]:
             tree = ast.parse(Path(filename).read_text())
             imports = set()

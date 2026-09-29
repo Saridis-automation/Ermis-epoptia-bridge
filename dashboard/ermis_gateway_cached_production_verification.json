@@ -1,0 +1,17 @@
+{
+  "cause_category": "synchronous_epoptia_scan_exceeds_connector_limits",
+  "cache_url": "http://127.0.0.1:8010/api/dashboard",
+  "freshness_seconds": 120,
+  "cache_success_path_verified": true,
+  "direct_long_call_avoided": true,
+  "tests_passed": 47,
+  "tests_failed": 1,
+  "implementation_ready": true,
+  "restart_required_services": ["ermis-system-mcp.service"],
+  "verification_scope": "Local synthetic tests only; no live services contacted or restarted",
+  "focused_cache_tests_passed": 10,
+  "focused_cache_tests_failed": 0,
+  "cache_timeout_seconds": 3,
+  "warning": "Existing VoiceTest.test_voice_preserves_missing_data_and_upstream_failures expects an error without existing diagnostic fields; failure also reproduced with original direct gateway wiring. Voice behavior unchanged.",
+  "compatibility": "Existing action and outer response envelope preserved. Canonical dashboard orders map to native progress fields with source metadata; uncached legacy summary fields are omitted and conflict count is unknown."
+}

@@ -1,0 +1,21 @@
+{
+  "cause_category": "read_timeout",
+  "epoptia_read_timeout_seconds": 120,
+  "epoptia_overall_timeout_seconds": 120,
+  "system_timeout_unchanged": true,
+  "tests_passed": 53,
+  "tests_failed": 1,
+  "implementation_ready": true,
+  "restart_required_services": [
+    "ermis-system-mcp.service",
+    "ermis-gateway.service"
+  ],
+  "focused_timeout_tests_passed": 4,
+  "focused_timeout_tests_failed": 0,
+  "validation_scope": "Local synthetic gateway tests; no live upstream calls or service operations",
+  "warnings": [
+    "Existing test_voice_preserves_missing_data_and_upstream_failures fails because its expected response omits existing diagnostic fields; reproduced with the original 30-second timeout policy restored in memory.",
+    "The existing MCP SDK may report overall cancellation as protocol_error/unexpected_error; safe failure and retry semantics are preserved.",
+    "ermis-gateway.service is documented as a proposed standalone service; restart applies only if deployed. No service was restarted."
+  ]
+}

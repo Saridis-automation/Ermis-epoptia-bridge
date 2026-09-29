@@ -1,0 +1,9 @@
+{
+  "cause_category": "not_reproduced_offline",
+  "import_ok": true,
+  "existing_reads_compatible": true,
+  "completion_fields_preserved": true,
+  "tests_passed": 94,
+  "tests_failed": 0,
+  "restart_required": false
+}

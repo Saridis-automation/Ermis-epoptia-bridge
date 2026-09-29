@@ -8,6 +8,7 @@ ALLOWED_SERVICES = (
     "ermis-epoptia-tunnel.service",
     "ermis-system-mcp.service",
     "ermis-system-tunnel.service",
+    "ermis-dashboard.service",
 )
 STATUS_VALUES = {
     "LoadState": frozenset(("stub", "loaded", "not-found", "bad-setting", "error", "merged", "masked")),

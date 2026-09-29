@@ -1,0 +1,11 @@
+{
+  "logical_source_category": "workorderlines_productionData_group_key",
+  "implementation": true,
+  "focused_test_count": 11,
+  "focused_test_failures": 0,
+  "affected_broader_test_count": 117,
+  "affected_broader_test_failures": 0,
+  "protected_unrelated_components_unchanged": true,
+  "restart_required_service": "ermis-dashboard.service",
+  "live_verification_pending": true
+}

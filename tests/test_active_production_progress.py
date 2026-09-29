@@ -2,7 +2,7 @@
 import ast
 from pathlib import Path
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import requests
 import epoptia_read as read
@@ -81,10 +81,19 @@ class ActiveProgressTests(unittest.TestCase):
         node.decorator_list = []
         existing = {'ok': True, **read.overview([])}
         scope = dict(epoptia_read=read, _read_query=Mock(return_value=existing.copy()),
-                     BASE_URL='https://example.invalid', WEB_USERNAME='synthetic', WEB_PASSWORD='synthetic')
+                     BASE_URL='https://example.invalid', HEADERS={}, WEB_USERNAME='synthetic', WEB_PASSWORD='synthetic')
         exec(compile(ast.Module(body=[node], type_ignores=[]), '<test>', 'exec'), scope)
-        with patch.object(read, 'active_production_progress', return_value={'active_workorders_total': 0}) as aggregate:
+        with patch.object(read, 'active_production_progress', return_value={
+                'active_workorders_total': 0,
+                'native_active_production_progress_source': {'complete': True}}) as aggregate, patch(
+                    'epoptia_queries.read_wol_snapshot', return_value={'deadlines': {
+                        'source': {'complete': True, 'status': 'ok'}, 'dates': {}}}) as snapshot:
             result = scope['production_overview']()
         self.assertEqual({k: result[k] for k in existing}, existing)
         self.assertEqual(result['active_workorders_total'], 0)
-        aggregate.assert_called_once_with('https://example.invalid', username='synthetic', password='synthetic')
+        aggregate.assert_called_once_with('https://example.invalid', username='synthetic',
+                                         password='synthetic', consume_rows=ANY)
+        snapshot.assert_called_once_with('https://example.invalid', {})
+        self.assertEqual(result['dashboard_orders']['canonical_version'], 2)
+        self.assertEqual(result['dashboard_orders']['urgent_orders'], [])
+        self.assertEqual(result['dashboard_orders']['overdue_work'], 0)

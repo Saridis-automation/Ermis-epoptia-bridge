@@ -1,0 +1,12 @@
+{
+  "cause_category": "terminal_rows_without_routing_reject_baseline_snapshot",
+  "baseline_persistence_fix_applied": true,
+  "tests_passed": 74,
+  "tests_failed": 0,
+  "implementation_ready": true,
+  "restart_required": true,
+  "baseline_creation_test_ok": true,
+  "transition_event_test_ok": true,
+  "dedup_test_ok": true,
+  "restart_persistence_test_ok": true
+}

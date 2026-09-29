@@ -1,0 +1,2 @@
+# Additional production WSGI server; reuse the project's Flask/MCP dependencies.
+waitress==3.0.2

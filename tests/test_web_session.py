@@ -44,6 +44,13 @@ class BrowserTransport(BaseAdapter):
                 self.session.cookies.set('XSRF-TOKEN', 'synthetic%2Bcsrf%3D', domain='example.invalid', path='/')
                 response.status_code = 302
                 response.headers['Location'] = '/capacity-planning'
+        elif request.url.endswith('/planning/calendar'):
+            self.case.assertEqual(request.method, 'GET')
+            self.case.assertIsNone(request.body)
+            response.headers['Content-Type'] = 'text/html'
+            response._content = (b'<div class="workorderWol" data-date="2026-09-21">'
+                                 b'<div class="wolCardComponent" data-id="3112" data-workorder="722"></div></div>')
+            response._content_consumed = True
         elif request.method == 'GET':
             response._content = b'<html>Capacity planning<input type="hidden" name="_token" value="synthetic"></html>'
             if self.failure == 'redirect_login_page':
@@ -87,7 +94,16 @@ class WebSessionTests(unittest.TestCase):
         result, calls = self.probe()
         self.assertTrue(result['native_progress_verified'])
         self.assertEqual(result['native_progress'], 11)
-        self.assertEqual([r.method for r in calls], ['GET', 'POST', 'GET', 'POST', 'POST'])
+        self.assertEqual([r.method for r in calls], ['GET', 'POST', 'GET', 'POST', 'POST', 'GET', 'GET', 'GET'])
+        self.assertEqual(calls[-1].url, 'https://example.invalid/planning/calendar')
+        self.assertEqual(result['target_date'], '2026-09-21')
+        calls = calls[:-1]
+        self.assertEqual(calls[-2].url, 'https://example.invalid/workorders/722')
+        self.assertEqual(calls[-1].url, 'https://example.invalid/reports/factory/productiondata')
+        self.assertEqual(calls[-1].headers['Cookie'], calls[-2].headers['Cookie'])
+        self.assertEqual(calls[-1].headers['Referer'], calls[-2].headers['Referer'])
+        self.assertEqual(calls[-1].headers['Accept'], 'text/html')
+        self.assertEqual(result['actual_production_completion']['reason'], 'label_missing')
 
     def test_login_failures_never_query_progress(self):
         for failure, count in [('missing_token', 1), ('login_419', 2), ('login_page', 2),

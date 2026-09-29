@@ -1,0 +1,1754 @@
+"""Read-only observations and fail-closed transaction evidence classification.
+
+Loaded as bytes by bootstrap after its independent pinned digest check. Never
+imports the installer. Every emitted token is from the fixed vocabulary below.
+"""
+import ctypes
+import errno
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import time
+
+ROOT = Path('/home/ermis/projects/epoptia-bridge')
+BASE = Path('/opt/ermis/epoptia-browser')
+TARGET = BASE / 'chromium-1243'
+PROFILE = Path('/etc/apparmor.d/ermis-epoptia-login-chromium')
+POLICY = Path('/usr/local/libexec/.ermis-epoptia-login-apparmor-receipt')
+RECEIPT = POLICY.with_name('.ermis-epoptia-login-receipt')
+READY = POLICY.with_name('.ermis-epoptia-login-ready')
+PROFILES = Path('/sys/kernel/security/apparmor/profiles')
+PARSER = Path('/usr/sbin/apparmor_parser')
+FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOATIME
+# Single reviewed allowlist; the manifest never includes itself.
+SOURCE_PATHS = (
+    'admin_bootstrap/bootstrap.py',
+    'admin_bootstrap/bootstrap.sh',
+    'admin_bootstrap/login_apparmor.py',
+    'admin_bootstrap/login_assets.json',
+    'admin_bootstrap/login_bootstrap.py',
+    'admin_bootstrap/login_browser_stage.py',
+    'admin_bootstrap/login_diagnose.py',
+    'chromium_runtime_smoke.cjs',
+    'epoptia_browser.py',
+    'epoptia_browser_access_check.cjs',
+    'epoptia_browser_launch.cjs',
+    'epoptia_browser_login.cjs',
+    'epoptia_browser_policy.cjs',
+    'epoptia_browser_runtime.cjs',
+    'epoptia_browser_scheduler.cjs',
+    'epoptia_browser_session.cjs',
+    'epoptia_login_apparmor.cjs',
+    'epoptia_login_backend.cjs',
+    'epoptia_login_daemon.cjs',
+    'epoptia_login_policy.cjs',
+    'epoptia_login_sandbox.cjs',
+    'epoptia_login_sandbox_worker.cjs',
+)
+
+
+
+class Failure(Exception):
+    def __init__(self, code, stage='other', state='unknown', retry='retry-forbidden'):
+        self.result = (code, stage, state, retry)
+
+
+def fail(code, stage='other', state='unknown', retry='retry-forbidden'):
+    raise Failure(code, stage, state, retry)
+
+
+def decode(data):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError()
+            result[key] = value
+        return result
+    return json.loads(data, object_pairs_hook=pairs)
+
+
+def signature(s):
+    return tuple(getattr(s, k) for k in ('st_dev', 'st_ino', 'st_mode', 'st_uid',
+                                       'st_gid', 'st_size', 'st_mtime_ns', 'st_ctime_ns',
+                                       'st_nlink', 'st_atime_ns'))
+
+
+class InvariantError(ValueError):
+    def __init__(self, invariant):
+        self.invariant = invariant
+        super().__init__(invariant)
+
+
+def no_capabilities(fd):
+    # fgetxattr addresses the opened no-follow inode. Linux bounds xattrs to 64KiB.
+    # Only ENODATA proves absence; unsupported/missing/error is UNKNOWN.
+    try:
+        os.getxattr(fd, 'security.capability')
+    except OSError as error:
+        if error.errno != errno.ENODATA:
+            raise InvariantError('caps-unknown') from None
+    except (AttributeError, TypeError, NotImplementedError):
+        raise InvariantError('caps-unknown') from None
+    else:
+        raise InvariantError('caps')
+
+
+def opened(path, owner=0, *, terminal_flags=FLAGS):
+    """Anchor each component; no symlinks/special files. Default to no-atime."""
+    if not path.is_absolute() or '..' in path.parts:
+        raise InvariantError('unsafe-path')
+    fd = os.open('/', os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for index, part in enumerate(path.parts[1:]):
+            s = os.fstat(fd)
+            if not stat.S_ISDIR(s.st_mode):
+                raise InvariantError('special')
+            if s.st_uid not in (0, owner):
+                raise InvariantError('owner')
+            if s.st_mode & 0o022:
+                raise InvariantError('mode')
+            info = os.stat(part, dir_fd=fd, follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode):
+                raise InvariantError('unsafe-link')
+            if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                raise InvariantError('special')
+            flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW if index < len(path.parts) - 2 else terminal_flags
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        result, fd = fd, None
+        return result
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def read_guard(error, stage, category):
+    """Retain exception compatibility; attach only bounded diagnostic evidence."""
+    error.read_stage, error.read_category = stage, category
+    return error
+
+
+def read(path, owner=0, mode=None, limit=1048576):
+    fd = opened(path, owner)
+    try:
+        s = os.fstat(fd)
+        if not stat.S_ISREG(s.st_mode):
+            raise read_guard(InvariantError('special'), 'fstat-before', 'type')
+        if s.st_nlink != 1:
+            raise read_guard(InvariantError('unsafe-link'), 'fstat-before', 'invalid')
+        if s.st_uid not in (0, owner) or (mode is not None and (s.st_uid != owner or s.st_gid != owner)):
+            raise read_guard(InvariantError('owner'), 'fstat-before', 'permission')
+        if s.st_mode & 0o6000:
+            raise read_guard(InvariantError('suid-sgid'), 'fstat-before', 'permission')
+        if s.st_mode & 0o1022 or (mode is not None and stat.S_IMODE(s.st_mode) != mode):
+            raise read_guard(InvariantError('mode'), 'fstat-before', 'permission')
+        if path.parts[:2] != ('/', 'sys'):
+            no_capabilities(fd)
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            data = stream.read(limit + 1)
+        # Preserve the original short-circuit order and all metadata checks.
+        # Ownership and mode safety map to permission; link safety to invalid.
+        if len(data) > limit:
+            raise read_guard(ValueError(), 'read', 'limit')
+        if signature(s) != signature(after := os.fstat(fd)):
+            raise read_guard(ValueError(),
+                'identity' if stat.S_ISREG(after.st_mode) else 'fstat-after',
+                'identity' if stat.S_ISREG(after.st_mode) else 'type')
+        if signature(s) != signature(after := path.lstat()):
+            raise read_guard(ValueError(),
+                'identity' if stat.S_ISREG(after.st_mode) else 'fstat-after',
+                'identity' if stat.S_ISREG(after.st_mode) else 'type')
+        return data
+    finally:
+        os.close(fd)
+
+
+def optional(path):
+    try:
+        return read(path, mode=0o644)
+    except FileNotFoundError:
+        return None
+
+
+def listing(path):
+    fd = opened(path)
+    try:
+        s = os.fstat(fd)
+        if not stat.S_ISDIR(s.st_mode) or s.st_uid != 0 or s.st_mode & 0o022:
+            raise ValueError()
+        names = os.listdir(fd)
+        if len(names) > 4096 or signature(s) != signature(os.fstat(fd)):
+            raise ValueError()
+        return names
+    finally:
+        os.close(fd)
+
+
+class SourceError(ValueError):
+    def __init__(self, status, reason, error=None, entries=()):
+        super().__init__(reason)
+        self.status, self.reason = status, reason
+        self.errno = getattr(error, 'errno', None)
+        self.entries = entries
+
+
+def source_read(root, relative):
+    """Read fixed relative names, anchored without following any component.
+
+    Source ownership is independent of installed root-owned receipts. Retain
+    install's regular-file, single-link and non-writable-by-others policy.
+    """
+    path = root / relative
+    fd = os.open('/', os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for index, part in enumerate(path.parts[1:]):
+            flags = (os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
+                     if index < len(path.parts) - 2 else FLAGS)
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_mode & 0o022:
+            raise SourceError('invalid', 'unsafe-type-mode')
+        try:
+            no_capabilities(fd)
+        except InvariantError as error:
+            raise SourceError('invalid' if error.invariant == 'caps' else 'unreadable', error.invariant) from None
+        with os.fdopen(fd, 'rb') as stream:
+            fd = None
+            data = stream.read(1048577)
+            if len(data) > 1048576 or signature(before) != signature(os.fstat(stream.fileno())):
+                raise SourceError('invalid', 'changed-during-read')
+        if signature(before) != signature(path.lstat()):
+            raise SourceError('invalid', 'changed-during-read')
+        return data
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def source_digests(sources):
+    return {name: hashlib.sha256(sources[name]).hexdigest() for name in SOURCE_PATHS}
+
+
+def generate_manifest(root):
+    sources = {name: source_read(root, name) for name in SOURCE_PATHS}
+    return (json.dumps(source_digests(sources), indent=2, sort_keys=True) + '\n').encode()
+
+
+def verify_source(root):
+    """Pure source preflight shared by install and diagnose; no installed reads."""
+    try:
+        if not root.is_absolute() or '..' in root.parts:
+            raise SourceError('invalid', 'unsafe-path')
+        raw = source_read(root, 'admin_bootstrap/login_manifest.json')
+        manifest = decode(raw)
+        if not isinstance(manifest, dict) or set(manifest) != set(SOURCE_PATHS):
+            raise SourceError('invalid', 'entry-set')
+        sources = {name: source_read(root, name) for name in SOURCE_PATHS}
+        if source_digests(sources) != manifest:
+            raise SourceError('invalid', 'digest-mismatch', entries=tuple(
+                name for name, digest in source_digests(sources).items() if manifest[name] != digest))
+        return sources, hashlib.sha256(raw).hexdigest()
+    except SourceError:
+        raise
+    except OSError as error:
+        reason = ('permission-denied' if error.errno in (errno.EACCES, errno.EPERM)
+                  else 'missing' if error.errno == errno.ENOENT
+                  else 'unsafe-type-mode' if error.errno in (errno.ELOOP, errno.ENOTDIR)
+                  else 'io-error')
+        status = 'invalid' if reason in ('missing', 'unsafe-type-mode') else 'unreadable'
+        raise SourceError(status, reason, error) from None
+    except (ValueError, UnicodeError):
+        raise SourceError('invalid', 'manifest-format') from None
+
+
+def source():
+    return verify_source(ROOT)
+
+
+def source_modules(sources):
+    modules = []
+    for name in ('login_browser_stage', 'login_apparmor'):
+        namespace = {'__name__': name, '__file__': str(ROOT / ('admin_bootstrap/' + name + '.py'))}
+        exec(compile(sources['admin_bootstrap/' + name + '.py'], '<verified-source>', 'exec'), namespace)
+        modules.append(namespace)
+    return modules
+
+
+def parser_syscalls(libc):
+    """Fail-closed x86-64 syscall allowlist; deny metadata writes and networking.
+
+    Landlock alone does not restrict chmod/chown/xattrs. The compiler needs no
+    such operations. Unsupported architectures do not execute the parser.
+    """
+    if os.uname().machine != 'x86_64':
+        raise ValueError()
+    class Filter(ctypes.Structure):
+        _fields_ = [('code', ctypes.c_ushort), ('jt', ctypes.c_ubyte),
+                    ('jf', ctypes.c_ubyte), ('k', ctypes.c_uint)]
+    class Program(ctypes.Structure):
+        _fields_ = [('length', ctypes.c_ushort), ('filters', ctypes.POINTER(Filter))]
+    allow, deny = 0x7fff0000, 0x00050001  # ALLOW / ERRNO(EPERM)
+    instructions = [(0x20, 0, 0, 4), (0x15, 1, 0, 0xc000003e),
+                    (0x06, 0, 0, deny), (0x20, 0, 0, 0)]
+    # These operations cannot publish policy or mutate files/metadata.
+    for number in (0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17,
+                   19, 21, 28, 39, 59, 60, 63, 79, 89, 97, 98, 99, 102, 104,
+                   107, 108, 110, 131, 137, 138, 158, 186, 202, 217, 218,
+                   228, 231, 262, 267, 269, 270, 271, 273, 302, 318, 332,
+                   334, 439):
+        instructions += [(0x15, 0, 1, number), (0x06, 0, 0, allow)]
+    # Descriptor queries and close-on-exec flags affect this process only.
+    instructions += [(0x15, 0, 6, 72), (0x20, 0, 0, 24),
+                     (0x15, 3, 0, 1), (0x15, 2, 0, 2), (0x15, 1, 0, 3),
+                     (0x06, 0, 0, deny), (0x06, 0, 0, allow)]
+    # write is allowed only to the already redirected stdout/stderr descriptors.
+    instructions += [(0x15, 0, 5, 1), (0x20, 0, 0, 16),
+                     (0x15, 2, 0, 1), (0x15, 1, 0, 2),
+                     (0x06, 0, 0, deny), (0x06, 0, 0, allow)]
+    # open/openat: forbid write access, creation, truncation, append, O_TMPFILE.
+    for number, offset in ((2, 24), (257, 32)):
+        instructions += [(0x15, 0, 4, number), (0x20, 0, 0, offset),
+                         (0x45, 0, 1, os.O_WRONLY | os.O_RDWR | os.O_CREAT |
+                          os.O_TRUNC | os.O_APPEND | (os.O_TMPFILE & ~os.O_DIRECTORY)),
+                         (0x06, 0, 0, deny), (0x06, 0, 0, allow)]
+    instructions.append((0x06, 0, 0, deny))
+    filters = (Filter * len(instructions))(*(Filter(*i) for i in instructions))
+    program = Program(len(filters), filters)
+    if libc.prctl(22, 2, ctypes.byref(program), 0, 0):
+        raise ValueError()
+
+
+def parser_readonly():
+    """Mandatory per-child Landlock write denial, including securityfs writes.
+
+    No profile, mount, or filesystem changes: irreversible process-local rights
+    reduction only. Unsupported kernels fail closed before parser exec.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    # Linux Landlock syscall numbers on the supported deployment architecture.
+    if os.uname().machine != 'x86_64':
+        raise ValueError()
+    abi = libc.syscall(444, 0, 0, 1)
+    if abi < 3:
+        raise ValueError()
+    # Handle all mutation rights through ABI 3 (including truncate/refer),
+    # leaving execution, file reads and directory enumeration permitted.
+    rights = sum(1 << bit for bit in (1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14))
+    rules = ctypes.c_uint64(rights)
+    fd = libc.syscall(444, ctypes.byref(rules), ctypes.sizeof(rules), 0)
+    if fd < 0:
+        raise ValueError()
+    try:
+        if libc.prctl(38, 1, 0, 0, 0) or libc.syscall(446, fd, 0):
+            raise ValueError()
+    finally:
+        os.close(fd)
+    parser_syscalls(libc)
+
+
+# Fixed shell source, never interpolated with profile bytes. Both bounded,
+# manifest-controlled profiles arrive on stdin; cat supplies an anonymous pipe.
+# Only errexit changes, and only around the pipeline. Capture the consumer's
+# status before even restoring options: producer SIGPIPE must not mask success.
+PARSER_PIPELINE = r"""
+case $- in *e*) parser_errexit=1 ;; *) parser_errexit=0 ;; esac
+set +e
+/bin/cat | /usr/sbin/apparmor_parser --config-file=/dev/null -Q -K --abort-on-error
+parser_rc=${PIPESTATUS[1]}
+if (( parser_errexit )); then set -e; fi
+exit "$parser_rc"
+"""
+PARSER_COMMAND = ['/bin/bash', '--noprofile', '--norc', '-e', '-o', 'pipefail',
+                  '-c', PARSER_PIPELINE]
+
+
+def parser_status(rc, failure):
+    if rc == 0:
+        return 'ok'
+    if rc == 124:
+        return 'timeout'
+    if rc in (126, 127):
+        return 'exec-error'
+    if rc < 0 or rc >= 128:
+        return 'signal-error'
+    return failure
+
+
+def parser(data, details=None):
+    details = {} if details is None else details
+    details['parser-options'] = 'failed'
+    details['parser-environment'] = 'unknown'
+    details['parser-runtime'] = 'not-reached'
+    details['candidate-compile'] = 'not-reached'
+
+    try:
+        fd = opened(PARSER)
+    except FileNotFoundError:
+        fail('apparmor-parser-missing', 'apparmor-parser-options', retry='retry-source-fix-required')
+    try:
+        s = os.fstat(fd)
+        if not stat.S_ISREG(s.st_mode) or s.st_uid != 0 or s.st_mode & 0o7022 or not s.st_mode & 0o111:
+            raise ValueError()
+        no_capabilities(fd)
+    finally:
+        os.close(fd)
+    # No pre-exec confinement, privilege change, timeout wrapper, cwd or HOME
+    # dependency: match the proven root command. -Q/-K forbid kernel/cache writes.
+    common = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                  check=False, env={'PATH': '/usr/sbin:/usr/bin:/bin', 'LANG': 'C'})
+    for payload, field, failure in (
+            (b'profile ermis-diagnose-probe { }\n', 'parser-runtime', 'environment-failure'),
+            (data, 'candidate-compile', 'compile-failure')):
+        try:
+            result = subprocess.run(PARSER_COMMAND, input=payload, **common)
+            category = parser_status(result.returncode, failure)
+        except (OSError, subprocess.SubprocessError) as error:
+            category = ('timeout' if isinstance(error, subprocess.TimeoutExpired) else
+                        'exec-error' if isinstance(error, OSError) else 'runtime-error')
+        details[field] = category
+        if category != 'ok':
+            if field == 'parser-runtime':
+                details['parser-environment'] = 'failed'
+                fail('apparmor-parser-options-unknown', 'apparmor-parser-options')
+            if category == 'compile-failure':
+                fail('apparmor-profile-syntax-invalid', 'apparmor-source-parse', retry='retry-source-fix-required')
+            fail('apparmor-source-parse-unknown', 'apparmor-source-parse')
+        if field == 'parser-runtime':
+            details['parser-options'] = 'ok'
+            details['parser-environment'] = 'ok'
+
+
+def residue(expected=()):
+    # Shared transaction prefixes cannot prove ownership: do not read candidates.
+    for directory, prefixes in ((BASE, ('.stage-',)), (PROFILE.parent, ('.ermis-login-',)),
+                                (POLICY.parent, ('.ermis-login-',))):
+        try:
+            names = listing(directory)
+        except FileNotFoundError:
+            continue
+        if any(name.startswith(prefixes) and directory / name not in expected for name in names):
+            return True
+    return False
+
+
+def loaded(record, aa):
+    lines = read(PROFILES).decode('ascii').splitlines()
+    name = aa['profile_name'](record)
+    relevant = [line for line in lines if 'ermis-epoptia-login-chromium' in line or
+                '/ms-playwright/chromium-' in line or str(BASE) in line]
+    if not relevant:
+        return False
+    if relevant != [name + ' (unconfined)']:
+        fail('apparmor-profile-loaded-identity-mismatch', 'apparmor-postload-verify', 'mixed-partial')
+    directory = PROFILES.parent / 'policy/profiles'
+    matches = []
+    for entry in listing(directory):
+        path = directory / entry
+        if read(path / 'name', limit=4096).strip() == name.encode():
+            matches.append(path)
+    if len(matches) != 1 or read(matches[0] / 'attach', limit=4096).strip() != record['executable'].encode() or read(matches[0] / 'mode', limit=64).strip() != b'unconfined':
+        fail('apparmor-profile-loaded-identity-mismatch', 'apparmor-postload-verify', 'mixed-partial')
+    return True
+
+
+def bindings(record, data, policy, receipt, ready, fingerprint, kernel_digest=None):
+    name = re.search(rb'\nprofile "([^"]+)"', data)[1].decode('ascii')
+    expected = {**record, 'profile_sha256': hashlib.sha256(data).hexdigest(),
+                'policy_identity': name, 'policy_sha256': name.rsplit('-', 1)[1]}
+    if kernel_digest is not None:
+        expected['kernel_sha1'] = kernel_digest
+    if policy is None or receipt is None or ready is None:
+        return False
+    login = decode(receipt)
+    return (decode(policy) == expected and set(login) == {'source', 'files'} and
+            login['source'] == fingerprint and isinstance(login['files'], dict) and bool(login['files']) and
+            all(isinstance(k, str) and isinstance(v, str) and re.fullmatch('[0-9a-f]{64}', v)
+                for k, v in login['files'].items()) and
+            decode(ready) == {'source': fingerprint, 'receipts': {
+                str(POLICY): hashlib.sha256(policy).hexdigest(), str(RECEIPT): hashlib.sha256(receipt).hexdigest()}})
+
+
+def candidate_identity(record, data, details):
+    # These expectations are pinned with this diagnostic, never read from receipts.
+    policy = ('abi <abi/4.0>,\nattachment \"' + str(TARGET / 'chrome-linux64/chrome') +
+              '\" flags=(unconfined) {\n  userns,\n}\n').encode()
+    name = ('ermis-epoptia-login-chromium-1243-' + hashlib.sha256(policy).hexdigest()).encode()
+    attach = str(TARGET / 'chrome-linux64/chrome').encode()
+    header = re.search(rb'\nprofile "([^"\n]*)" "([^"\n]*)"', data)
+    details['candidate-name'] = 'ok' if header and header[1] == name and record['revision'] == '1243' else 'mismatch'
+    details['candidate-attachment'] = 'ok' if header and header[2] == attach and record['executable'].encode() == attach else 'mismatch'
+    if 'mismatch' in (details['candidate-name'], details['candidate-attachment']):
+        fail('apparmor-source-invalid', 'tree-stage', retry='retry-source-fix-required')
+    # Ignore only generated comments; all policy syntax must match the narrow rule.
+    body = re.sub(rb'(?m)^#[^\n]*\n', b'', data)
+    prefix = b'abi <abi/4.0>,\nprofile "' + name + b'" "' + attach + b'" flags=(unconfined) {\n'
+    expected = prefix + b'  userns,\n}\n'
+    details['candidate-rules'] = ('ok' if body == expected else
+                                  'missing-userns' if body == prefix + b'}\n' else 'unexpected')
+    if details['candidate-rules'] != 'ok':
+        fail('apparmor-source-invalid', 'apparmor-source-parse', retry='retry-source-fix-required')
+
+
+# A fixed, root-owned evidence location; never follow paths supplied by a ledger.
+# The current installer does not publish this protocol. Its absence is evidence
+# of nothing: in particular, command success cannot establish rollback equality.
+LEDGER = POLICY.with_name('.ermis-epoptia-login-transaction')
+PHASES = ('original-trigger', 'load', 'post-load-verify', 'rollback-file', 'rollback-kernel')
+OUTCOMES = frozenset(('ok', 'failed', 'not-run'))
+INSUFFICIENT = 'retry=blocked:insufficient-transaction-evidence'
+DISK_ROOTS = (BASE, PROFILE.parent, POLICY, RECEIPT, READY,
+              Path('/var/cache/apparmor'))
+
+
+APPARMOR_MODES = frozenset(('enforce', 'complain', 'kill', 'unconfined',
+                           'prompt', 'user', 'audit'))
+
+
+def profile_listing(data):
+    """A returned list (including []) proves a complete, validated read.
+
+    The caller must supply the full bounded read, never a partial read buffer.
+    Parse the final suffix: spaces and parenthesized text belong to names.
+    """
+    text = data.decode('utf-8')
+    if text and not text.endswith('\n'):
+        raise ValueError('incomplete-listing')
+    rows = []
+    for line in text.split('\n')[:-1]:
+        line = line.removesuffix('\r').rstrip(' \t')
+        match = re.fullmatch(r'(.+) \(([^()]+)\)', line)
+        if (not match or match[2] not in APPARMOR_MODES or
+                any(ord(c) < 32 or ord(c) == 127 for c in line) or
+                match[1] != match[1].strip()):
+            raise ValueError('invalid-listing-line')
+        rows.append((match[1], match[2]))
+    return sorted(rows)
+
+
+
+# Independent hard caps; only bounded lines and fixed digest storage are kept.
+KERNEL_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0)
+KERNEL_CHUNK = 65536
+KERNEL_BYTES = 32 * 1024 * 1024
+KERNEL_LINES = 131072
+KERNEL_LINE_BYTES = 16384
+
+
+class KernelReadError(ValueError):
+    pass
+
+
+def kernel_io_error(stage, error):
+    # Copy only a fixed symbolic class before cleanup; never serialize the error.
+    allowed = ('EAGAIN', 'EBADF', 'EIO', 'ENOMEM', 'EFAULT', 'EACCES', 'EPERM',
+               'ENOENT', 'ELOOP', 'EINTR')
+    symbol = next((name for name in allowed if error.errno == getattr(errno, name)), 'OTHER')
+    return KernelReadError(stage + '-' + symbol)
+
+
+def kernel_count(value, increment, limit, reason):
+    # Subtract before adding, avoiding overflow even with fixed-width counters.
+    if value < 0 or increment < 0 or value > limit or increment > limit - value:
+        raise KernelReadError(reason)
+    return value + increment
+
+
+def kernel_line(raw):
+    if b'\x00' in raw:
+        raise KernelReadError('invalid-nul')
+    try:
+        line = raw.decode('utf-8')
+    except UnicodeError:
+        raise KernelReadError('invalid-encoding') from None
+    # securityfs emits newline-terminated records: preserve partial-read rejection.
+    if not line.endswith('\n'):
+        raise KernelReadError('invalid-line')
+    line = line[:-1].removesuffix('\r').rstrip(' \t')
+    match = re.fullmatch(r'(.+) \(([^()]+)\)', line)
+    if (not match or any(ord(c) < 32 or ord(c) == 127 for c in line) or
+            match[1] != match[1].strip()):
+        raise KernelReadError('invalid-line')
+    if match[2] not in APPARMOR_MODES:
+        raise KernelReadError('invalid-mode')
+    return match[1], match[2]
+
+
+def kernel_lines(fd):
+    size = count = 0
+    pending = b''
+    while True:
+        try:
+            chunk = os.read(fd, KERNEL_CHUNK)
+        except OSError as error:
+            if error.errno == errno.EINTR:
+                continue
+            raise kernel_io_error('profiles-read-error', error) from None
+        if chunk == b'':
+            if pending:
+                raise KernelReadError('invalid-line')
+            return
+        size = kernel_count(size, len(chunk), KERNEL_BYTES, 'total-byte-limit')
+        parts = (pending + chunk).split(b'\n')
+        pending = parts.pop()
+        for part in parts:
+            raw = part + b'\n'
+            count = kernel_count(count, 1, KERNEL_LINES, 'line-count-limit')
+            if len(raw) > KERNEL_LINE_BYTES:
+                raise KernelReadError('per-line-limit')
+            yield kernel_line(raw)
+        if len(pending) > KERNEL_LINE_BYTES:
+            raise KernelReadError('per-line-limit')
+
+
+class KernelSummary:
+    def __init__(self):
+        # No names retained: fixed SHA-256 table at <=50% occupancy. A digest
+        # collision fails closed as ambiguous, never as absence.
+        self.table = bytearray(262144 * 32)
+        self.count = self.pairs = self.records = 0
+        self.exact = self.conflict = self.pattern = False
+
+    def add(self, row):
+        self.count = kernel_count(self.count, 1, KERNEL_LINES, 'line-count-limit')
+        if (len(row) not in (2, 3) or any(not v or v != v.strip() or
+                any(ord(c) < 32 or ord(c) == 127 for c in v) for v in row)):
+            raise KernelReadError('invalid-line')
+        if row[1] not in APPARMOR_MODES:
+            raise KernelReadError('invalid-mode')
+        digest = hashlib.sha256(row[0].encode()).digest()
+        if digest == bytes(32):
+            raise KernelReadError('duplicate-name')
+        slot = int.from_bytes(digest[:4], 'big') % 262144
+        while True:
+            offset = slot * 32
+            previous = self.table[offset:offset + 32]
+            if previous == digest:
+                raise KernelReadError('duplicate-name')
+            if previous == bytes(32):
+                self.table[offset:offset + 32] = digest
+                break
+            slot = (slot + 1) % 262144
+        def hashed(values):
+            return int.from_bytes(hashlib.sha256('\x00'.join(values).encode()).digest(), 'big')
+        self.pairs = (self.pairs + hashed(row[:2])) % (1 << 256)
+        self.records = (self.records + hashed(row)) % (1 << 256)
+        if len(row) == 3:
+            relevant = ('ermis-epoptia-login-chromium' in row[0] or
+                any('/ms-playwright/chromium-' in v or str(BASE) in v for v in (row[0], row[2])))
+            exact = row == (expected_profile(), 'unconfined', PINNED['executable'])
+            self.exact |= relevant and exact
+            self.conflict |= relevant and not exact
+            self.pattern |= any(c in row[2] for c in '*?[]{}^\\@')
+
+    def result(self):
+        status = (('present-conflict', 'related-identity-or-attachment') if self.conflict else
+                  ('ambiguous', 'pattern-attachment') if self.pattern else
+                  ('present-exact', 'verified-identity') if self.exact else
+                  ('absent', 'complete-listing'))
+        return self.count, self.pairs, self.records, status
+
+
+def kernel_summary():
+    flat = KernelSummary()
+    try:
+        fd = opened(PROFILES, terminal_flags=KERNEL_FLAGS)
+    except FileNotFoundError:
+        raise  # Only open-time absence may consult the subsystem status helper.
+    except PermissionError:
+        raise KernelReadError('open-permission-denied') from None
+    except InvariantError as error:
+        reason = {'owner': 'open-owner-error', 'mode': 'open-permission-error',
+                  'special': 'open-type-error', 'unsafe-link': 'open-symlink-error'}
+        raise KernelReadError(reason.get(error.invariant, 'open-safety-error')) from None
+    except OSError:
+        raise KernelReadError('open-error') from None
+    stage = 'stat-error'
+    try:
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode):
+                raise KernelReadError('type-error')
+            if before.st_uid != 0:
+                raise KernelReadError('owner-error')
+            if before.st_mode & 0o7022:
+                raise KernelReadError('permission-error')
+            for row in kernel_lines(fd):
+                flat.add(row)
+            stage = 'stat-error'
+            after = os.fstat(fd)
+            # Virtual metadata may drift. Bind the complete stream only to this
+            # fd's invariant identity/type, never to a later path lookup.
+            identity = lambda info: (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode))
+            if identity(before) != identity(after):
+                raise KernelReadError('fd-identity-error')
+        except OSError as error:
+            raise kernel_io_error(stage, error) from None
+        finally:
+            # Preserve a prior failure even if cleanup also fails.
+            failed = sys.exc_info()[0] is not None
+            try:
+                os.close(fd)
+            except OSError as error:
+                if not failed:
+                    raise kernel_io_error('fd-close-error', error) from None
+    except OSError as error:
+        raise kernel_io_error(stage, error) from None
+    flat_identity = flat.count, flat.pairs
+    del flat
+    records = KernelSummary()
+    directory = PROFILES.parent / 'policy/profiles'
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if records.count >= KERNEL_LINES:
+                    raise KernelReadError('line-count-limit')
+                values = []
+                for key in ('name', 'mode', 'attach'):
+                    try:
+                        value = read(directory / entry.name / key, limit=4096).decode('utf-8')
+                    except UnicodeError:
+                        raise KernelReadError('invalid-encoding') from None
+                    except ValueError as error:
+                        if not hasattr(error, 'read_stage'):
+                            read_guard(error, 'parse', 'invalid')
+                        raise
+                    if '\x00' in value:
+                        raise KernelReadError('invalid-nul')
+                    values.append(value.removesuffix('\n').removesuffix('\r'))
+                records.add(tuple(values))
+    except OSError as error:
+        raise kernel_io_error('policy-record-read-error', error) from None
+    if flat_identity != (records.count, records.pairs):
+        raise KernelReadError('listing-mismatch')
+    return records.result()
+
+
+def kernel_inventory(identity=True):
+    deadline = time.monotonic() + 5
+    directory = PROFILES.parent / 'policy/profiles'
+    rows = []
+    for entry in sorted(listing(directory)):
+        if time.monotonic() > deadline:
+            raise ValueError()
+        path = directory / entry
+        values = []
+        for key in (('name', 'mode', 'attach', 'sha1') if identity else ('name', 'mode', 'attach')):
+            raw = read(path / key, limit=4096).decode('utf-8')
+            value = raw.removesuffix('\n').removesuffix('\r')
+            if not value or value != value.strip() or any(ord(c) < 32 or ord(c) == 127 for c in value):
+                raise ValueError()
+            values.append(value)
+        rows.append(tuple(values))
+    # read() returns only after EOF and metadata/bounds validation. Empty is
+    # complete evidence; read failures never become an empty inventory.
+    flat = profile_listing(read(PROFILES))
+    if flat != sorted((name, mode) for name, mode, *_ in rows):
+        raise ValueError()
+    return rows
+
+
+def conflicts(record, aa, prepared=()):
+    """Conservative scan: unknown AARE/include syntax never proves disjointness."""
+    wanted = (aa['profile_name'](record), record['executable'])
+    possible = False
+    kernel = kernel_inventory(False)
+    for index in (0, 2):
+        values = [row[index] for row in kernel if row[index]]
+        if len(values) != len(set(values)):
+            return 'definite-conflict'
+    for name, mode, attach in kernel:
+        if (name == wanted[0] and attach != wanted[1]) or (attach == wanted[1] and name != wanted[0]):
+            return 'definite-conflict'
+        if any(c in attach for c in '*?[]{}^\\@'):
+            possible = True
+    names, attachments = [], []
+    # Quoting is syntax, not part of an identity. Do not consume flags as an
+    # attachment; accept adjacent opening braces and declarations after a close.
+    # Keep AARE escapes/patterns intact: they are ambiguity, not exact identity.
+    token = r'("[^"\n]+"|[^\s{}"#]+)'
+    start = r'(?:^|(?<=\}))\s*'
+    flags = r'(?:\s*flags=\([^()\n]*\))?\s*\{'
+    header = re.compile(start + r'profile\s+' + token + r'(?:\s+(?!flags=)' + token + r')?' + flags, re.M)
+    implicit = re.compile(start + r'(/[^\s{}"#]+|"/[^"\n]+")' + flags, re.M)
+    for entry in listing(PROFILE.parent):
+        path = PROFILE.parent / entry
+        # These fixed directories contain supporting syntax/state, not top-level
+        # policy. Baseline capture still covers every entry, including symlinks.
+        if entry in ('abstractions', 'tunables', 'abi', 'cache', 'disable', 'force-complain', 'local'):
+            continue
+        body = read(path).decode('utf-8')
+        if path in prepared:
+            continue
+        supporting_syntax = 'include' in body or '@{' in body
+        # Remove comments without treating a quoted '#' as a comment marker.
+        body = re.sub(r'"[^"\n]*"|#[^\n]*', lambda m: '' if m[0].startswith('#') else m[0], body)
+        explicit = list(header.finditer(body))
+        definitions = [(m[1].strip('"'), (m[2] or '').strip('"')) for m in explicit]
+        definitions += [(a.strip('"'), a.strip('"')) for a in implicit.findall(body)]
+        if len(explicit) != len(re.findall(start + r'profile\b', body, re.M)) or body.count('{') != body.count('}'):
+            possible = True
+        if not definitions or (path != PROFILE and supporting_syntax):
+            possible = True
+        for name, attach in definitions:
+            names.append(name)
+            if attach:
+                attachments.append(attach)
+            if path != PROFILE and (name == wanted[0] or attach == wanted[1]):
+                return 'definite-conflict'
+            if any(c in attach for c in '*?[]{}^\\@'):
+                possible = True
+    if len(names) != len(set(names)) or len(attachments) != len(set(attachments)):
+        return 'definite-conflict'
+    return 'possible-conflict' if possible else 'clear'
+
+
+def baseline():
+    """Complete bounded snapshot, including cache/disable/complain state.
+
+    Unsafe or unobservable entries invalidate the entire observation. No receipt
+    or ledger field is used as a filename. Fingerprints remain internal.
+    """
+    disk = {}
+    remaining = [4096]
+    def visit(path):
+        remaining[0] -= 1
+        if remaining[0] < 0:
+            raise ValueError()
+        try:
+            fd = opened(path)
+        except FileNotFoundError:
+            disk[str(path)] = None
+            return
+        try:
+            before = os.fstat(fd)
+            if before.st_uid != 0 or before.st_mode & 0o7022:
+                raise ValueError()
+            if stat.S_ISDIR(before.st_mode):
+                names = sorted(os.listdir(fd))
+                for name in names:
+                    visit(path / name)
+                digest = hashlib.sha256(json.dumps(names).encode()).hexdigest()
+            elif stat.S_ISREG(before.st_mode):
+                digest = hashlib.sha256(read(path)).hexdigest()
+            else:
+                raise ValueError()
+            if signature(before) != signature(os.fstat(fd)) or signature(before) != signature(path.lstat()):
+                raise ValueError()
+            disk[str(path)] = [list(signature(before)), digest]
+        finally:
+            os.close(fd)
+    for path in DISK_ROOTS:
+        visit(path)
+    kernel = kernel_inventory()
+    if any(not re.fullmatch('[0-9a-f]{40,64}', row[3]) for row in kernel):
+        raise ValueError()
+    return {'disk': disk, 'kernel': sorted([list(row) for row in kernel])}
+
+
+def complete_baseline(value):
+    if not isinstance(value, dict) or set(value) != {'disk', 'kernel'}:
+        return False
+    disk, kernel = value['disk'], value['kernel']
+    if not isinstance(disk, dict) or not all(str(p) in disk for p in DISK_ROOTS):
+        return False
+    for path, item in disk.items():
+        if not isinstance(path, str) or not any(Path(path) == p or p in Path(path).parents for p in DISK_ROOTS):
+            return False
+        if item is not None and (not isinstance(item, list) or len(item) != 2 or
+                not isinstance(item[0], list) or len(item[0]) != 10 or
+                any(type(n) is not int for n in item[0]) or
+                not isinstance(item[1], str) or not re.fullmatch('[0-9a-f]{64}', item[1])):
+            return False
+    return (isinstance(kernel, list) and all(isinstance(row, list) and len(row) == 4 and
+            all(isinstance(v, str) for v in row) and bool(row[0]) and bool(row[2]) and
+            row[1] in ('enforce', 'complain', 'unconfined', 'kill') and
+            re.fullmatch('[0-9a-f]{40,64}', row[3]) for row in kernel))
+
+
+def evidence():
+    unknown = tuple('phase-' + p + '-INDETERMINATE' for p in PHASES)
+    phases = unknown
+    try:
+        ledger = decode(read(LEDGER, mode=0o600))
+        if (set(ledger) != {'schema', 'source', 'status', 'phases', 'prestate', 'committed'} or
+                type(ledger['schema']) is not int or ledger['schema'] != 1 or ledger['status'] not in ('idle', 'active') or
+                set(ledger['phases']) != set(PHASES) or
+                any(v not in OUTCOMES for v in ledger['phases'].values())):
+            return 'INDETERMINATE', phases
+        phases = tuple('phase-' + p + '-' + ledger['phases'][p] for p in PHASES)
+        if (ledger['source'] != source()[1] or not complete_baseline(ledger['prestate']) or
+                (ledger['committed'] is not None and not complete_baseline(ledger['committed']))):
+            return 'INDETERMINATE', phases
+        current = baseline()
+        if not complete_baseline(current) or baseline() != current or decode(read(LEDGER, mode=0o600)) != ledger:
+            return 'INDETERMINATE', phases
+        if ledger['status'] != 'idle':
+            return 'transaction-active', phases
+        # rc / phase 'ok' alone is never sufficient. Every baseline field counts.
+        if current == ledger['prestate']:
+            return 'exact-rollback-baseline', phases
+        if (current == ledger['committed'] and ledger['phases']['load'] == 'ok' and
+                ledger['phases']['post-load-verify'] == 'ok'):
+            return 'exact-committed-candidate', phases
+        return 'baseline-mismatch', phases
+    except Exception:
+        return 'INDETERMINATE', phases
+
+# Diagnostic-only protocol. The installer is deliberately unchanged and does
+# not produce this ledger yet. Schema 1 cannot establish generation history.
+MODEL_FIELDS = {
+    'browser-source-tree': 'unknown', 'transaction': 'unknown',
+    'candidate-generation': 'unknown', 'candidate-artifact': 'unknown',
+    'candidate-validation': 'not-run', 'staged-tree': 'unknown',
+    'installed-tree': 'unknown', 'profile-disk': 'unknown',
+    'profile-kernel': 'unknown', 'receipt': 'unknown', 'baseline': 'unknown',
+}
+PINNED = dict(schema=2, executable=str(TARGET / 'chrome-linux64/chrome'),
+              revision='1243', layout='chrome-linux64/chrome',
+              playwright='1.63.0', chromium='153.0.8010.12')
+
+
+def error_bucket(error):
+    """Keep the original exception (and errno) privately; export only enums."""
+    if hasattr(error, 'invariant'):
+        return error.invariant
+    if isinstance(error, OSError):
+        return {errno.ENOENT: 'missing', errno.EACCES: 'access-denied',
+                errno.EPERM: 'access-denied', errno.ELOOP: 'symlink', errno.ENOTDIR: 'unsafe-path'}.get(error.errno, 'io-error')
+    return {'binary-missing': 'layout', 'binary-invalid': 'elf',
+            'capabilities': 'caps', 'tree-race': 'hash',
+            'metadata-invalid': 'layout', 'source-ambiguous': 'layout',
+            'path-invalid': 'unsafe-path', 'staging-invalid': 'unsafe-path'}.get(
+                error.args[0] if error.args else None, 'unknown')
+
+
+def checked_tree(root, uid, tree):
+    """Use the same source/installed policy and bounded errors as install."""
+    return tree['tree'](root, uid)
+
+
+def transaction_observation(fingerprint, prepared=()):
+    """Return trusted history only after two identical anchored reads.
+
+    No names from an untrusted/old ledger are opened. Missing history plus an
+    empty residue scan describes current idleness, never an original failure.
+    """
+    pending = residue(prepared)
+    try:
+        raw = read(LEDGER, mode=0o600)
+    except FileNotFoundError:
+        return ('stale' if pending else 'idle'), None
+    ledger = decode(raw)
+    keys = {'schema', 'source', 'status', 'tree-stage', 'generation', 'candidate', 'staged', 'cleaned'}
+    if isinstance(ledger, dict) and ledger.get('schema') == 1:
+        if (set(ledger) == {'schema', 'source', 'status', 'phases', 'prestate', 'committed'} and
+                ledger['source'] == fingerprint and ledger['status'] in ('idle', 'active') and
+                complete_baseline(ledger['prestate']) and
+                (ledger['committed'] is None or complete_baseline(ledger['committed'])) and
+                raw == read(LEDGER, mode=0o600)):
+            return ('stale' if pending and ledger['status'] == 'idle' else ledger['status']), ledger
+        return 'unknown', None
+    if not isinstance(ledger, dict) or set(ledger) != keys or type(ledger['schema']) is not int or ledger['schema'] != 2:
+        return 'unknown', None
+    if (ledger['source'] != fingerprint or ledger['status'] not in ('idle', 'active') or
+            ledger['tree-stage'] not in ('ok', 'failed', 'not-reached') or
+            ledger['generation'] not in ('reached', 'not-reached') or
+            type(ledger['cleaned']) is not bool or
+            (ledger['tree-stage'] != 'ok' and ledger['generation'] != 'not-reached')):
+        return 'stale', None
+    for key, prefix in (('candidate', '.ermis-login-'), ('staged', '.stage-')):
+        name = ledger[key]
+        if name is not None and (not isinstance(name, str) or not re.fullmatch(re.escape(prefix) + r'[A-Za-z0-9_]{1,64}', name)):
+            return 'stale', None
+    if raw != read(LEDGER, mode=0o600):
+        return 'unknown', None
+    if ledger['status'] == 'idle' and pending:
+        return 'stale', ledger
+    return ledger['status'], ledger
+
+
+def validate_candidate(record, data, aa, details):
+    identity = {}
+    try:
+        candidate_identity(record, data, identity)
+    except Failure:
+        return ('identity-mismatch' if identity.get('candidate-name') == 'mismatch' else
+                'attachment-mismatch' if identity.get('candidate-attachment') == 'mismatch' else 'rules-mismatch')
+    if data != aa['profile'](record):
+        return 'digest-mismatch'
+    try:
+        parser(data, details)
+    except Failure as error:
+        return 'parse-failed' if error.result[0] == 'apparmor-profile-syntax-invalid' else 'unknown'
+    return 'ok'
+
+
+def artifact(path, errors, key):
+    try:
+        return 'readable', read(path, mode=0o644)
+    except (OSError, ValueError) as error:
+        errors[key] = error
+        bucket = error_bucket(error)
+        status = {'unsafe-link': 'symlink', 'special': 'nonregular'}.get(bucket, bucket)
+        return (status if status in ('missing', 'symlink', 'nonregular', 'access-denied', 'unsafe-path', 'io-error') else 'unknown'), None
+
+
+# Exact fixed installed artifact set; receipt-supplied paths are never followed.
+INSTALLED_FILES = {
+    **{Path('/usr/local/bin/epoptia-login-' + action): 0o755
+       for action in ('start', 'status', 'finalize', 'stop')},
+    Path('/usr/local/libexec/ermis-epoptia-login-supervisor'): 0o755,
+    Path('/usr/local/libexec/ermis-epoptia-login-runtime'): 0o755,
+    Path('/etc/systemd/system/ermis-epoptia-login.service'): 0o644,
+    Path('/etc/systemd/system/ermis-epoptia-login.socket'): 0o644,
+}
+
+
+def installed_files(login):
+    sources, _ = source()
+    assets = decode(sources['admin_bootstrap/login_assets.json'])
+    expected = {str(path): assets[path.name] for path in INSTALLED_FILES}
+    if decode(login)['files'] != expected:
+        return False
+    return all(hashlib.sha256(read(path, mode=mode)).hexdigest() == expected[str(path)]
+               for path, mode in INSTALLED_FILES.items())
+
+
+def probe_reason(error):
+    if isinstance(error, PermissionError):
+        return 'permission-denied'
+    if isinstance(error, FileNotFoundError):
+        return 'missing'
+    if isinstance(error, (ValueError, UnicodeError)):
+        return 'malformed-partial'
+    return 'probe-error'
+
+
+def expected_profile():
+    policy = ('abi <abi/4.0>,\nattachment "' + PINNED['executable'] +
+              '" flags=(unconfined) {\n  userns,\n}\n').encode()
+    return 'ermis-epoptia-login-chromium-1243-' + hashlib.sha256(policy).hexdigest()
+
+
+KERNEL_READ_STAGES = frozenset(('none', 'open', 'fstat-before', 'read', 'eof',
+    'parse', 'fstat-after', 'identity', 'close', 'helper', 'unknown'))
+KERNEL_READ_CATEGORIES = frozenset(('none', 'permission', 'would-block',
+    'interrupted', 'bad-fd', 'io', 'memory', 'fault', 'invalid', 'symlink',
+    'type', 'identity', 'limit', 'malformed', 'close', 'other', 'unknown'))
+KERNEL_ERRNO_CATEGORIES = {
+    'EACCES': 'permission', 'EPERM': 'permission', 'EAGAIN': 'would-block',
+    'EINTR': 'interrupted', 'EBADF': 'bad-fd', 'EIO': 'io', 'ENOMEM': 'memory',
+    'EFAULT': 'fault', 'EINVAL': 'invalid', 'ELOOP': 'symlink',
+    'ENOENT': 'other', 'OTHER': 'other',
+}
+
+
+class KernelProbeResult(tuple):
+    """Keep the two-value compatibility result; detail never grants authority."""
+    def __new__(cls, status, reason, category, stage=None):
+        result = super().__new__(cls, (status, reason))
+        result.read_category = category
+        result.read_stage = stage
+        return result
+
+
+def kernel_read_details(result):
+    """Project existing evidence onto a strict public vocabulary, never text."""
+    status, reason = result
+    stage = category = 'unknown'
+    if status in ('absent', 'present-exact', 'present-conflict'):
+        stage = category = 'none'
+    else:
+        reasons = {
+            'open-permission-denied': ('open', 'permission'),
+            'open-permission-error': ('open', 'permission'),
+            'open-owner-error': ('open', 'permission'),
+            'open-type-error': ('open', 'type'),
+            'open-symlink-error': ('open', 'symlink'),
+            'open-error': ('open', 'unknown'),
+            'open-safety-error': ('open', 'unknown'),
+            'type-error': ('fstat-before', 'type'),
+            'owner-error': ('fstat-before', 'permission'),
+            'permission-error': ('fstat-before', 'permission'),
+            'fd-identity-error': ('identity', 'identity'),
+            'listing-mismatch': ('identity', 'identity'),
+            'listing-changed': ('identity', 'identity'),
+            'duplicate-name': ('parse', 'identity'),
+            'subsystem-status': ('helper', 'unknown'),
+            'status-tool-error': ('helper', 'unknown'),
+        }
+        reasons.update({key: ('parse', 'malformed') for key in
+            ('invalid-nul', 'invalid-encoding', 'invalid-line', 'invalid-mode')})
+        reasons.update({key: ('parse', 'limit') for key in
+            ('total-byte-limit', 'line-count-limit', 'per-line-limit')})
+        # The existing stat-error reason does not distinguish before/after.
+        # Do not invent detail that the reader did not retain.
+        for prefix, location in (('profiles-read-error', 'read'),
+                ('policy-record-read-error', 'read'), ('stat-error', 'unknown'),
+                ('fd-close-error', 'close')):
+            reasons.update({prefix + '-' + symbol: (location, value)
+                            for symbol, value in KERNEL_ERRNO_CATEGORIES.items()})
+        stage, category = reasons.get(reason, ('unknown', 'unknown'))
+        if isinstance(result, KernelProbeResult):
+            category = result.read_category
+            if result.read_stage is not None:
+                stage = result.read_stage
+    return {
+        'kernel-read-stage': stage if type(stage) is str and stage in KERNEL_READ_STAGES else 'unknown',
+        'kernel-read-category': category if type(category) is str and category in KERNEL_READ_CATEGORIES else 'unknown',
+    }
+
+
+def kernel_probe():
+    try:
+        observed = kernel_summary()
+        if observed != kernel_summary():
+            return 'ambiguous', 'listing-changed'
+        return observed[3]
+    except KernelReadError as error:
+        reason = str(error)
+        return ('ambiguous' if reason == 'duplicate-name' else 'unknown'), reason
+    except FileNotFoundError:
+        # aa-status --enabled has a fixed exit-status protocol; never use its
+        # human-readable output as proof that a profile is absent.
+        try:
+            status = subprocess.run(['/usr/sbin/aa-status', '--enabled'],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5, check=False, env={'PATH': '/usr/sbin:/usr/bin:/bin', 'LANG': 'C', 'PYTHONDONTWRITEBYTECODE': '1'})
+            kind = {1: 'disabled', 3: 'securityfs-unmounted', 4: 'permission-denied'}.get(status.returncode, 'probe-error')
+            return kind, 'subsystem-status'
+        except (OSError, subprocess.SubprocessError):
+            return 'probe-error', 'status-tool-error'
+    except (OSError, ValueError, UnicodeError) as error:
+        reason = 'permission-denied' if isinstance(error, PermissionError) else 'read-error'
+        category = (next((value for symbol, value in KERNEL_ERRNO_CATEGORIES.items()
+                         if symbol != 'OTHER' and error.errno == getattr(errno, symbol)), 'unknown')
+                    if isinstance(error, OSError) else getattr(error, 'read_category', 'invalid'))
+        stage = 'unknown' if isinstance(error, OSError) else getattr(error, 'read_stage', 'helper')
+        return KernelProbeResult('unknown', reason, category, stage)
+
+
+SERVICE = 'ermis-epoptia-login.service'
+SOCKET = 'ermis-epoptia-login.socket'
+PROC = Path('/proc')
+
+
+def unit_probe(unit):
+    result = subprocess.run(['/usr/bin/systemctl', '--system', 'show', unit,
+        '--property=LoadState,ActiveState,SubState,MainPID,ControlGroup'],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        timeout=5, check=False, env={'PATH': '/usr/sbin:/usr/bin:/bin', 'LANG': 'C'})
+    if result.returncode or len(result.stdout) > 8192:
+        raise OSError('unit-query')
+    if not result.stdout.endswith(b'\n'):
+        raise ValueError('partial-unit-query')
+    fields = {}
+    for line in result.stdout.decode('ascii').splitlines():
+        key, value = line.split('=', 1)
+        if key in fields or any(ord(c) < 32 or ord(c) > 126 for c in line):
+            raise ValueError()
+        fields[key] = value
+    core = {'LoadState', 'ActiveState', 'SubState'}
+    if unit == SERVICE:
+        core.add('MainPID')
+    if not core <= fields.keys() or fields.keys() - (core | {'MainPID', 'ControlGroup'}):
+        raise ValueError()
+    # These are the only requested optional properties. A socket has no
+    # service MainPID; absent ControlGroup is resolved by the exact proc scan.
+    fields.setdefault('MainPID', '0')
+    fields.setdefault('ControlGroup', '')
+    if (fields['LoadState'] not in ('loaded', 'not-found') or
+            not re.fullmatch(r'0|[1-9][0-9]{0,9}', fields['MainPID']) or
+            int(fields['MainPID']) > 2147483647 or
+            (fields['ControlGroup'] and (not fields['ControlGroup'].startswith('/') or
+             fields['ControlGroup'] == '/' or any(p in ('', '.', '..') for p in fields['ControlGroup'].split('/')[1:])))):
+        raise ValueError()
+    unit_state(fields, unit)
+    return fields
+
+
+def unit_state(fields, unit):
+    state = (fields['ActiveState'], fields['SubState'])
+    pid = int(fields['MainPID'])
+    if state == ('inactive', 'dead') and pid == 0:
+        return 'inactive'
+    if fields['LoadState'] != 'loaded':
+        raise ValueError('contradictory-unit-state')
+    if state == ('failed', 'failed') and pid == 0:
+        return 'inactive'
+    if unit == SOCKET and state == ('active', 'listening') and pid == 0:
+        return 'infrastructure'
+    if unit == SERVICE and state == ('active', 'running') and pid > 0:
+        return 'verify-process'
+    raise ValueError('unsupported-unit-state')
+
+
+def proc_bytes(path):
+    fd = os.open(path, FLAGS)
+    try:
+        data = os.read(fd, 65537)
+        if len(data) > 65536:
+            raise ValueError()
+        return data
+    finally:
+        os.close(fd)
+
+
+def process_probe(cgroups=(), main_pid=0):
+    """Read only executable links and cgroups, never cmdline or environment."""
+    deadline = time.monotonic() + 5
+    browser_paths = {PINNED['executable']}
+    for cache in (ROOT / '.cache', Path('/home/ermis/.cache')):
+        browser_paths.add(str(cache / 'ms-playwright/chromium-1243/chrome-linux64/chrome'))
+    login_paths = {str(p) for p in INSTALLED_FILES if p.name in
+                   ('ermis-epoptia-login-supervisor', 'ermis-epoptia-login-runtime')}
+    active = {'login': False, 'browser': False}
+    verified_pid = False
+    reason = None
+    try:
+        with os.scandir(PROC) as entries:
+            for count, entry in enumerate(entries):
+                if count > 32768 or time.monotonic() > deadline:
+                    raise ValueError()
+                if not entry.name.isdecimal() or int(entry.name) == os.getpid():
+                    continue
+                path = PROC / entry.name
+                try:
+                    raw = proc_bytes(path / 'cgroup').decode('ascii')
+                    if any(ord(c) < 32 and c != '\n' or ord(c) == 127 for c in raw):
+                        raise ValueError()
+                    groups = []
+                    for line in raw.splitlines():
+                        parts = line.split(':', 2)
+                        if len(parts) != 3 or not parts[0].isdecimal() or not parts[2].startswith('/'):
+                            raise ValueError()
+                        groups.append(parts[2])
+                    if not groups or not raw.endswith('\n'):
+                        raise ValueError()
+                    known = tuple(cgroups) + ('/system.slice/' + SERVICE,)
+                    owned = any(g == c or g.startswith(c + '/') for g in groups for c in known if c)
+                    active['login'] |= owned
+                    try:
+                        executable = os.readlink(path / 'exe')
+                    except FileNotFoundError:
+                        # Kernel threads have no exe; vanished processes cannot
+                        # justify a complete inactive scan on this observation.
+                        if not path.exists():
+                            raise ValueError()
+                        executable = ''
+                    active['login'] |= executable in login_paths
+                    if int(entry.name) == main_pid:
+                        verified_pid = owned or executable in login_paths
+                    active['browser'] |= executable.removesuffix(' (deleted)') in browser_paths
+                    if owned and executable.rsplit('/', 1)[-1] in ('chrome', 'chromium', 'chrome_crashpad_handler'):
+                        active['browser'] = True
+                except (OSError, ValueError, UnicodeError) as error:
+                    reason = probe_reason(error)
+    except (OSError, ValueError) as error:
+        reason = probe_reason(error)
+    result = {key: ('active', 'matching-process') if value else
+            ('unknown', reason) if reason else ('inactive', 'complete-scan')
+            for key, value in active.items()}
+    if main_pid:
+        result['main-pid'] = ('unknown', reason) if reason else (
+            ('active', 'verified-main-pid') if verified_pid else ('unknown', 'unverified-main-pid'))
+    # Partial scans cannot prove a consistent login observation.
+    if reason:
+        result['login'] = ('unknown', reason)
+    return result
+
+
+def activity_probe():
+    units, error = {}, None
+    for unit in (SERVICE, SOCKET):
+        try:
+            units[unit] = unit_probe(unit)
+            unit_state(units[unit], unit)
+        except (OSError, ValueError, UnicodeError, subprocess.SubprocessError) as exc:
+            error = probe_reason(exc)
+    service = units.get(SERVICE)
+    main_pid = int(service['MainPID']) if service else 0
+    processes = process_probe(tuple(u.get('ControlGroup', '') for name, u in units.items()
+                                   if name == SERVICE and u.get('ControlGroup')), main_pid=main_pid)
+    login, reason = processes['login']
+    if error:
+        login, reason = 'unknown', error
+    elif main_pid:
+        login, reason = processes.get('main-pid', ('unknown', 'unverified-main-pid'))
+    browser, browser_reason = processes['browser']
+    return {'login-activity': login, 'login-activity-reason': reason,
+            'browser-activity': browser, 'browser-activity-reason': browser_reason}
+
+
+def receipt_probe(fingerprint=None):
+    values = []
+    for path in (POLICY, RECEIPT, READY):
+        try:
+            values.append(read(path, mode=0o644))
+        except FileNotFoundError:
+            values.append(None)
+        except InvariantError:
+            return 'unsafe-type-owner-link', 'unsafe-metadata'
+        except OSError as error:
+            return ('unsafe-type-owner-link', 'unsafe-link') if error.errno in (errno.ELOOP, errno.ENOTDIR) else ('unreadable', probe_reason(error))
+        except ValueError:
+            return 'ambiguous', 'changed-or-partial-read'
+    if values == [None] * 3:
+        return 'missing', 'no-receipts'
+    try:
+        policy, login, ready = [decode(v) if v is not None else None for v in values]
+        if policy is None:
+            if (isinstance(login, dict) and set(login) == {'source', 'files'} and
+                isinstance(login['source'], str) and re.fullmatch('[0-9a-f]{64}', login['source']) and
+                isinstance(login['files'], dict) and set(login['files']) == {str(p) for p in INSTALLED_FILES} and
+                all(isinstance(v, str) and re.fullmatch('[0-9a-f]{64}', v) for v in login['files'].values()) and ready is None):
+                return 'valid-precommit-failure-rollback', 'non-success-incomplete'
+            return 'ambiguous', 'incomplete-receipt-set'
+        if not isinstance(policy, dict):
+            raise ValueError()
+        if policy.get('schema') == 1:
+            keys = {'schema', 'executable', 'revision', 'playwright', 'chromium', 'sha256', 'profile_sha256'}
+            if type(policy['schema']) is not int or set(policy) != keys or any(not isinstance(policy[k], str) for k in keys - {'schema'}):
+                raise ValueError()
+            p = policy
+            if (not re.fullmatch(r'/home/ermis/(?:\.cache|projects/epoptia-bridge/\.cache)/ms-playwright/chromium-' + re.escape(p['revision']) + r'/chrome-linux(?:64)?/chrome', p['executable']) or
+                not re.fullmatch(r'[1-9][0-9]*', p['revision']) or
+                not re.fullmatch(r'\d+\.\d+\.\d+', p['playwright']) or
+                not re.fullmatch(r'\d+(?:\.\d+){3}', p['chromium']) or
+                not re.fullmatch('[0-9a-f]{64}', p['sha256'])):
+                raise ValueError()
+            legacy = ('abi <abi/4.0>,\n# ermis-epoptia-login owned v1\n# playwright=' + p['playwright'] +
+                ' chromium=' + p['chromium'] + ' revision=' + p['revision'] + ' sha256=' + p['sha256'] +
+                '\nprofile "' + p['executable'] + '" flags=(unconfined) {\n  userns,\n}\n').encode()
+            if hashlib.sha256(legacy).hexdigest() != p['profile_sha256']:
+                raise ValueError()
+            return ('stale-recognized-source-binding', 'legacy-non-success') if login is None and ready is None else ('ambiguous', 'legacy-mixed-receipts')
+        keys = set(PINNED) | {'sha256', 'tree_sha256', 'profile_sha256', 'policy_identity', 'policy_sha256'}
+        if 'kernel_sha1' in policy:
+            keys.add('kernel_sha1')
+            if not isinstance(policy['kernel_sha1'], str) or not re.fullmatch('[0-9a-f]{40}', policy['kernel_sha1']):
+                raise ValueError()
+        if (type(policy.get('schema')) is not int or set(policy) != keys or any(policy.get(k) != v for k, v in PINNED.items()) or
+            policy['policy_identity'] != expected_profile() or policy['policy_sha256'] != expected_profile().rsplit('-', 1)[1] or
+            any(not isinstance(policy[k], str) or not re.fullmatch('[0-9a-f]{64}', policy[k]) for k in ('sha256', 'tree_sha256', 'profile_sha256'))):
+            raise ValueError()
+        p = policy
+        generated = ('abi <abi/4.0>,\n# ermis-epoptia-login owned v2\n# playwright=' + p['playwright'] +
+            ' chromium=' + p['chromium'] + ' revision=' + p['revision'] + ' sha256=' + p['sha256'] +
+            ' tree_sha256=' + p['tree_sha256'] + '\nprofile "' + p['policy_identity'] + '" "' +
+            p['executable'] + '" flags=(unconfined) {\n  userns,\n}\n').encode()
+        if hashlib.sha256(generated).hexdigest() != p['profile_sha256']:
+            raise ValueError()
+        # The v2 policy receipt is the final success commit, even if the other
+        # artifacts are now missing. It can never become replaceable stale state.
+        if login is None and ready is None:
+            return 'valid-committed-success', 'commit-marker-present'
+        if (not isinstance(login, dict) or set(login) != {'source', 'files'} or
+            not isinstance(login['source'], str) or not re.fullmatch('[0-9a-f]{64}', login['source']) or
+            not isinstance(login['files'], dict) or set(login['files']) != {str(p) for p in INSTALLED_FILES} or
+            any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v) for v in login['files'].values()) or
+            ready != {'source': login['source'], 'receipts': {str(POLICY): hashlib.sha256(values[0]).hexdigest(), str(RECEIPT): hashlib.sha256(values[1]).hexdigest()}}):
+            raise ValueError()
+        return 'valid-committed-success', 'source-current' if login['source'] == fingerprint else 'source-stale-success'
+    except (ValueError, TypeError, KeyError, UnicodeError):
+        return 'invalid-schema', 'unrecognized-receipt'
+
+
+def retry_observation():
+    # No activity is inferred from receipts. Diagnose never takes a lock or
+    # grants install authority; install performs its own fresh observations.
+    return {'login-activity': 'unknown', 'browser-activity': 'unknown',
+            'install-atomic-recheck': 'supported-pending'}
+
+
+def classify_install_baseline(details, conflict, *, phase='initial', bound=False):
+    """One fail-closed policy for advisory, initial and final admission.
+
+    Prepared exceptions require fresh exact inode/content bindings. An
+    ambiguous receipt classification alone never authorizes installation.
+    """
+    if phase not in ('initial', 'prepared'):
+        return False
+    prepared = phase == 'prepared'
+    required = {
+        'baseline': ('prepared-bound',) if prepared else ('clean-absent', 'first-absent-stale-receipt'),
+        'source-manifest': ('ok',), 'browser-source-tree': ('ok',),
+        'source-candidate-validation': ('ok',), 'candidate-validation': ('ok',),
+        'transaction': ('idle',), 'noreplace-support': ('symbol-present',),
+        'login-activity': ('inactive',), 'browser-activity': ('inactive',),
+        'kernel-probe': ('absent',), 'profile-kernel': ('absent',),
+        'installed-tree': ('valid',) if prepared else ('absent',),
+        'profile-disk': ('candidate',) if prepared else ('absent',),
+        'candidate-artifact': ('bound',) if prepared else ('not-applicable', 'missing-after-cleanup'),
+        'staged-tree': ('bound',) if prepared else ('not-applicable', 'absent'),
+        'receipt-classification': ('ambiguous',) if prepared else
+            ('missing', 'valid-precommit-failure-rollback'),
+    }
+    return (conflict == 'clear' and all(details.get(k) in v for k, v in required.items()) and
+            (not prepared or (bound and details.get('receipt-reason') == 'incomplete-receipt-set')))
+
+
+def atomic_install_recheck(activity, destinations, *, phase="initial", expected=None, prepared=None):
+    """Fresh observations under the same lock at initial and pre-load gates.
+
+    Unknown observations deliberately deny installation. The caller supplies
+    narrow live activity and destination checks, never cached diagnose output.
+    """
+    if phase not in ('initial', 'prepared') or (phase == 'prepared' and
+            (expected is None or prepared is None)):
+        raise ValueError('atomic-phase-unproven')
+    observations = []
+    for _ in range(2):
+        sources, fingerprint = source()
+        tree, aa = source_modules(sources)
+        if not tree['noreplace_support']():
+            raise ValueError('manual-review:noreplace-unsupported')
+        path, uid = tree['source'](ROOT)
+        source_identity = tree['signature'](path.lstat())
+        identities = []
+        record = tree['tree'](path, uid, identities=identities)
+        destination = tree['destination_state'](record)
+        candidate = aa['profile'](record)
+        if validate_candidate(record, candidate, aa, {}) != 'ok':
+            raise ValueError('atomic-candidate-unproven')
+        if phase == 'prepared':
+            # Exact bound objects, never a directory/prefix exemption.
+            prepared['verify']()
+            transaction, history = transaction_observation(fingerprint, prepared['residue'])
+        else:
+            transaction, history = transaction_observation(fingerprint)
+        # Retain the install-only disk conflict gate. Public diagnose's kernel
+        # observation is independent of unrelated disk parser ambiguity.
+        disk_conflict = (conflicts(PINNED, aa, prepared['residue']) if phase == 'prepared'
+                         else conflicts(PINNED, aa))
+        if disk_conflict != 'clear':
+            raise ValueError('atomic-conflict-unproven')
+        state, conflict, snapshot = current_state(tree, aa, record, fingerprint, {})
+        active = activity()
+        details = dict(state, **active)
+        details.update({'source-manifest': 'ok', 'browser-source-tree': 'ok',
+            'source-candidate-validation': 'ok', 'candidate-validation': 'ok',
+            'transaction': transaction, 'noreplace-support': 'symbol-present',
+            'candidate-artifact': 'bound' if phase == 'prepared' else 'not-applicable',
+            'staged-tree': 'bound' if phase == 'prepared' else 'not-applicable'})
+        bound = phase == 'prepared' and snapshot[0] == record
+        if bound:
+            details['baseline'] = 'prepared-bound'
+        if not classify_install_baseline(details, conflict, phase=phase, bound=bound):
+            raise ValueError('atomic-state-unproven')
+        destination_state = destinations()
+        complete = baseline()
+        if not complete_baseline(complete):
+            raise ValueError('atomic-baseline-unproven')
+        if phase == 'prepared':
+            for key, value in {'identity': source_identity, 'nodes': identities,
+                               'record': record, 'profile': candidate,
+                               'fingerprint': fingerprint}.items():
+                if expected[key] != value:
+                    raise ValueError('atomic-source-changed')
+            if (transaction, history) != expected['transaction']:
+                raise ValueError('atomic-transaction-changed')
+            prepared['verify']()
+        observations.append((fingerprint, source_identity, identities, record, candidate,
+                             transaction, history, state, snapshot, active, destination_state, complete, destination))
+    if observations[0] != observations[1]:
+        raise ValueError('atomic-state-changed')
+    return {'identity': source_identity, 'nodes': identities, 'record': record,
+            'destination': destination, 'profile': candidate, 'fingerprint': fingerprint,
+            'transaction': (transaction, history)}
+
+
+def current_state(tree, aa, record, fingerprint, errors):
+    result = {}
+    try:
+        installed_record = checked_tree(TARGET, 0, tree)
+        result['installed-tree'] = 'valid'
+    except (OSError, ValueError) as error:
+        errors['installed-tree'] = error
+        installed_record = None
+        result['installed-tree'] = ('absent' if error_bucket(error) == 'missing' and
+                                    target_absent() else 'unknown' if error_bucket(error) in
+                                    ('access-denied', 'io-error', 'unknown') else 'invalid')
+    values = []
+    for key, path in (('profile-disk', PROFILE), ('policy', POLICY), ('login', RECEIPT), ('ready', READY)):
+        status, data = artifact(path, errors, key)
+        values.append((status, data))
+    (disk_status, disk), *receipts = values
+    result['profile-disk'] = ('absent' if disk_status == 'missing' else
+                              'invalid' if disk_status in ('symlink', 'nonregular') else 'unknown')
+    result['receipt'] = ('absent' if all(s == 'missing' for s, _ in receipts) else
+                         'unknown' if any(s not in ('missing', 'readable', 'symlink', 'nonregular') for s, _ in receipts) else 'invalid')
+    bound = None
+    kernel_digest = None
+    if installed_record is not None and disk_status == 'readable':
+        try:
+            aa['validate_identity'](installed_record)
+            if any(installed_record.get(k) != v for k, v in PINNED.items()):
+                raise ValueError()
+            expected = aa['profile'](installed_record)
+            label = 'candidate' if installed_record == record else 'prior'
+            result['profile-disk'] = label if disk == expected else 'foreign'
+            if all(s == 'readable' for s, _ in receipts):
+                policy, login, ready = (v for _, v in receipts)
+                policy_record = decode(policy)
+                if not isinstance(policy_record, dict):
+                    raise ValueError()
+                kernel_digest = policy_record.get('kernel_sha1')
+                if kernel_digest is not None and not re.fullmatch('[0-9a-f]{40}', kernel_digest):
+                    raise ValueError()
+                prior_source = decode(login)['source']
+                if not isinstance(prior_source, str) or not re.fullmatch('[0-9a-f]{64}', prior_source):
+                    raise ValueError()
+                # Old source fingerprints have no independently verified artifact
+                # manifest here. Internal receipt consistency alone is insufficient.
+                if (prior_source == fingerprint and
+                        bindings(installed_record, expected, policy, login, ready, prior_source, kernel_digest) and
+                        installed_files(login)):
+                    result['receipt'] = label
+                    bound = label
+                else:
+                    result['receipt'] = 'stale'
+        except OSError as error:
+            errors['receipt'] = error
+            result['receipt'] = 'unknown'
+        except (ValueError, KeyError, TypeError):
+            result['receipt'] = 'invalid'
+    elif disk_status == 'readable':
+        result['profile-disk'] = 'foreign'
+    classification, reason = receipt_probe(fingerprint)
+    result['receipt-classification'] = classification
+    result['receipt-reason'] = reason
+    if classification != 'valid-committed-success':
+        bound = None
+    if not bound:
+        result['receipt'] = {'missing': 'absent', 'stale-recognized-source-binding': 'stale',
+            'valid-precommit-failure-rollback': 'stale',
+            'valid-committed-success': 'committed-success', 'invalid-schema': 'invalid',
+            'unsafe-type-owner-link': 'invalid'}.get(classification, 'unknown')
+    probe = kernel_probe()
+    status, reason = probe
+    result.update(kernel_read_details(probe))
+    result['kernel-probe'] = status
+    result['kernel-probe-reason'] = reason
+    result['profile-kernel'] = {'absent': 'absent', 'present-exact': bound or 'foreign',
+        'present-conflict': 'conflict'}.get(status, 'unknown')
+    conflict = 'clear' if status in ('absent', 'present-exact') else 'definite-conflict' if status == 'present-conflict' else 'unknown'
+    kernel = (status, reason)
+    states = [result[k] for k in ('installed-tree', 'profile-disk', 'profile-kernel', 'receipt')]
+    if 'unknown' in states:
+        result['baseline'] = 'unknown'
+    elif states == ['absent'] * 4:
+        result['baseline'] = 'clean-absent'
+    elif (states == ['absent', 'absent', 'absent', 'stale'] and
+          classification == 'valid-precommit-failure-rollback' and
+          [s for s, _ in receipts] == ['missing', 'readable', 'missing']):
+        result['baseline'] = 'first-absent-stale-receipt'
+    elif bound and states == ['valid', bound, bound, bound]:
+        result['baseline'] = 'coherent-' + bound
+    else:
+        result['baseline'] = 'mixed'
+    return result, conflict, (installed_record, values, kernel)
+
+
+def target_absent():
+    # ENOENT inside an existing tree is invalid layout, not an absent target.
+    try:
+        TARGET.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
+def model_observation():
+    details = dict(MODEL_FIELDS)
+    details.update(retry_observation())
+    details.update(activity_probe())
+    probe = kernel_probe()
+    details['kernel-probe'], details['kernel-probe-reason'] = probe
+    details.update(kernel_read_details(probe))
+    details['profile-kernel'] = {'absent': 'absent', 'present-exact': 'foreign',
+        'present-conflict': 'conflict'}.get(details['kernel-probe'], 'unknown')
+    details['receipt-classification'], details['receipt-reason'] = receipt_probe()
+    errors = {}  # Original exceptions retain exact errno; never serialized.
+    phases = tuple('phase-' + p + '-INDETERMINATE' for p in PHASES)
+    history = None
+    conflict = 'unknown'
+    try:
+        sources, fingerprint = source()
+        details.update({'source-manifest': 'ok', 'source-manifest-reason': 'verified'})
+        tree, aa = source_modules(sources)
+        details['noreplace-support'] = 'symbol-present' if tree['noreplace_support']() else 'unsupported'
+        # Hash comments do not affect policy syntax. Fixed placeholders allow
+        # policy validation even when the browser source is absent or unreadable.
+        record = dict(PINNED, sha256='0' * 64, tree_sha256='0' * 64)
+        if os.geteuid() != 0:
+            details['baseline-blocker'] = 'root-observation-required'
+            details['baseline-classification'] = 'unknown'
+            return details, errors, phases, history, conflict
+        try:
+            path, uid = tree['source'](ROOT)
+            source_record = checked_tree(path, uid, tree)
+            if any(source_record.get(k) != v for k, v in PINNED.items()):
+                raise InvariantError('layout')
+            record = source_record
+            details['browser-source-tree'] = 'ok'
+        except (OSError, ValueError) as error:
+            errors['browser-source-tree'] = error
+            bucket = error_bucket(error)
+            details['browser-source-tree'] = bucket
+        data = aa['profile'](record)
+        details['source-candidate-generation'] = 'reached'
+        details['candidate-validation'] = validate_candidate(record, data, aa, details)
+        details['source-candidate-validation'] = details['candidate-validation']
+        try:
+            details['transaction'], history = transaction_observation(fingerprint)
+            if history:
+                details['candidate-generation'] = history['generation']
+                if history['tree-stage'] != 'ok':
+                    phases = ('phase-tree-stage-' + history['tree-stage'],) + tuple(
+                        'phase-' + p + '-not-reached' for p in ('candidate-generation', 'load', 'post-load-verify'))
+                if history['candidate'] is not None:
+                    status, candidate = artifact(PROFILE.parent / history['candidate'], errors, 'candidate-artifact')
+                    if status == 'missing' and history['cleaned'] and details['transaction'] == 'idle':
+                        status = 'missing-after-cleanup'
+                    details['candidate-artifact'] = status
+                    if candidate is not None and history['generation'] == 'reached':
+                        details['candidate-validation'] = validate_candidate(record, candidate, aa, details)
+                if history['staged'] is not None:
+                    try:
+                        staged = checked_tree(BASE / history['staged'], 0, tree)
+                        details['staged-tree'] = 'valid' if staged == record else 'invalid'
+                    except (OSError, ValueError) as error:
+                        errors['staged-tree'] = error
+                        details['staged-tree'] = ('absent' if error_bucket(error) == 'missing' else
+                                                 'unknown' if error_bucket(error) in ('access-denied', 'io-error', 'unknown') else 'invalid')
+            if details['transaction'] == 'idle':
+                if not history or history['candidate'] is None:
+                    details['candidate-artifact'] = 'not-applicable'
+                if not history or history['staged'] is None:
+                    details['staged-tree'] = 'not-applicable'
+        except (OSError, ValueError) as error:
+            errors['transaction'] = error
+        # Independently prove current state twice. No old ledger is required.
+        current, conflict, snapshot = current_state(tree, aa, record, fingerprint, errors)
+        again, next_conflict, next_snapshot = current_state(tree, aa, record, fingerprint, errors)
+        transaction, next_history = transaction_observation(fingerprint)
+        if (current != again or snapshot != next_snapshot or conflict != next_conflict or
+                transaction != details['transaction'] or history != next_history or source()[1] != fingerprint):
+            current['baseline'] = 'unknown'
+        latest_activity = activity_probe()
+        for key in ('login-activity', 'browser-activity'):
+            if latest_activity[key] != details[key]:
+                details[key] = 'unknown'
+                details[key + '-reason'] = 'observation-changed'
+        details.update(current)
+    except SourceError as error:
+        errors['source-manifest'] = error
+        bucket = error_bucket(OSError(error.errno, '')) if error.errno is not None else error.reason
+        details.update({'source-manifest': bucket, 'source-manifest-reason': bucket})
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        errors['observation'] = error
+    details['baseline-blocker'] = 'none'
+    for key, accepted in (
+            ('source-manifest', ('ok',)), ('browser-source-tree', ('ok',)),
+            ('source-candidate-validation', ('ok',)), ('transaction', ('idle',)),
+            ('profile-kernel', ('absent', 'candidate', 'prior')),
+            ('login-activity', ('inactive',)), ('browser-activity', ('inactive',))):
+        if details.get(key) not in accepted:
+            details['baseline-blocker'] = key + '-unproven'
+            if details['baseline'] != 'mixed':
+                details['baseline'] = 'unknown'
+            break
+    if details['baseline-blocker'] == 'none' and details['baseline'] in ('mixed', 'unknown'):
+        details['baseline-blocker'] = ('committed-success-artifacts-missing' if
+            details.get('receipt-classification') == 'valid-committed-success' and
+            details['installed-tree'] == 'absent' else 'artifact-state-unproven')
+    details['baseline-classification'] = ('clean-absent-with-replaceable-stale-receipt' if details['baseline'] == 'first-absent-stale-receipt' else details['baseline'])
+    return details, errors, phases, history, conflict
+
+
+def diagnose(scoped=False):
+    details, errors, phases, history, conflict = model_observation()
+    primary = 'NONE'
+    stage = 'other'
+    if details.get('source-manifest') != 'ok' or details['browser-source-tree'] not in ('ok', 'unknown'):
+        primary, stage = 'TREE_SOURCE_FAILURE', 'tree-stage'
+    elif details['staged-tree'] == 'invalid' or (history and history['tree-stage'] == 'failed'):
+        primary, stage = 'TREE_STAGE_FAILURE', 'tree-stage'
+    elif any(details.get(k) in ('identity-mismatch', 'attachment-mismatch')
+             for k in ('candidate-validation', 'source-candidate-validation')):
+        # In-memory source generation is reached independently of transaction
+        # generation. Artifact absence can never enter this branch.
+        primary, stage = 'PROFILE_IDENTITY_FAILURE', 'apparmor-source-parse'
+    elif any(details.get(k) in ('parse-failed', 'rules-mismatch')
+             for k in ('candidate-validation', 'source-candidate-validation')):
+        primary, stage = 'PROFILE_PARSE_FAILURE', 'apparmor-source-parse'
+    elif details['baseline'] == 'mixed' or conflict in ('definite-conflict', 'possible-conflict'):
+        primary, stage = 'INSTALLED_STATE_MIXED', 'apparmor-postload-verify'
+    elif (details['baseline'] == 'unknown' or details['browser-source-tree'] != 'ok' or
+          details['candidate-validation'] != 'ok' or conflict != 'clear' or
+          details['transaction'] != 'idle' or details['candidate-artifact'] not in
+          ('not-applicable', 'missing-after-cleanup') or details['staged-tree'] not in ('not-applicable', 'absent')):
+        primary = 'INSUFFICIENT_EVIDENCE'
+    states = [details[k] for k in ('installed-tree', 'profile-disk', 'profile-kernel', 'receipt')]
+    coherent = states == {
+        'clean-absent': ['absent'] * 4,
+        'first-absent-stale-receipt': ['absent', 'absent', 'absent', 'stale'],
+        'coherent-prior': ['valid', 'prior', 'prior', 'prior'],
+        'coherent-candidate': ['valid', 'candidate', 'candidate', 'candidate'],
+    }.get(details['baseline'])
+    eligible = classify_install_baseline(details, conflict)
+    # Advisory only: no install authority, lock, CAP, or liveness check is cached
+    # or granted here. Install must rerun its own gates atomically.
+    retry = 'eligible_after_atomic_recheck' if eligible else 'blocked'
+    details['install-policy'] = 'first-install-only'
+    details.setdefault('noreplace-support', 'unknown')
+    details['noreplace-filesystem'] = 'unproven-until-commit'
+    details['irreversible-boundary'] = 'pending-fresh-verification'
+    details['kernel-proof'] = 'absent-add-only-canonical-sha256'
+    details['success-commit'] = 'receipt-last-noreplace'
+    details['capability-query'] = 'nofollow-fd-enodata-only'
+    causal_blocker = {
+        'login-activity-unproven': 'login-not-inactive',
+        'browser-activity-unproven': 'browser-not-inactive',
+        'source-candidate-validation-unproven': 'candidate-unproven',
+        'transaction-unproven': 'transaction-not-idle',
+    }.get(details.get('baseline-blocker'))
+    details['retry-blocker'] = ('none' if eligible else
+        causal_blocker if details['baseline'] == 'unknown' and causal_blocker else
+        'manual-review-first-install-only' if details['baseline'] not in ('clean-absent', 'first-absent-stale-receipt') else
+        primary.lower().replace('_', '-') if primary not in ('NONE', 'INSUFFICIENT_EVIDENCE') else
+        'transaction-not-idle' if details['transaction'] != 'idle' else
+        'profile-conflict-unresolved' if conflict != 'clear' else
+        'baseline-unproven' if not coherent else
+        'candidate-unproven' if any(details.get(k) != 'ok' for k in
+            ('candidate-validation', 'source-candidate-validation')) else
+        'candidate-artifact-unresolved' if details['candidate-artifact'] not in
+            ('not-applicable', 'missing-after-cleanup') else
+        'staged-tree-unresolved' if details['staged-tree'] not in ('not-applicable', 'absent') else
+        'install-atomic-recheck-unproven' if details.get('install-atomic-recheck') not in ('supported-pending', 'verified') else
+        'login-not-inactive' if details.get('login-activity') != 'inactive' else
+        'browser-not-inactive' if details.get('browser-activity') != 'inactive' else 'insufficient-evidence')
+    code = 'apparmor-ready' if primary == 'NONE' and details['baseline'] == 'coherent-candidate' else 'apparmor-indeterminate'
+    if primary == 'TREE_SOURCE_FAILURE':
+        code = 'apparmor-source-invalid'
+    details['tree-first-invariant'] = (error_bucket(errors['staged-tree']) if 'staged-tree' in errors and
+                                       details['browser-source-tree'] == 'ok' else details['browser-source-tree'])
+    first = errors.get('browser-source-tree') or errors.get('staged-tree')
+    details['tree-first-component'] = getattr(first, 'component', 'unknown')
+    for field in ('component-label', 'mode-category', 'observed-mode', 'remediation'):
+        details['tree-first-' + field] = getattr(first, field.replace('-', '_'), 'unknown')
+    details['primary'] = primary
+    result = (code, stage, details['baseline'], 'retry=' + retry)
+    return result + (phases if scoped else ()) + tuple(k + '=' + v for k, v in details.items())

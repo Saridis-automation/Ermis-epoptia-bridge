@@ -5,6 +5,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
+import epoptia_read
 from ermis_gateway import ACTIONS, Gateway, route
 from ermis_gateway_server import BoundedHTTP, create_app
 from ermis_gateway_voice import RealtimeHTTP, VoiceSessions, VoiceUnavailable, tool_schema
@@ -52,6 +53,41 @@ class VoiceTest(unittest.TestCase):
         for schema in schemas:
             self.assertFalse(schema['parameters']['additionalProperties'])
             self.assertEqual(set(schema['parameters']['required']), set(ACTIONS[schema['name']].fields))
+
+    def test_laser_voice_query_uses_existing_wip_logic(self):
+        rows = [{'workorderline_id': index, 'erp_routing': [
+            {'workstationName': station, 'status': status}]}
+            for index, (station, status) in enumerate([
+                ('LASER', 'started'), ('LASER', 'in_progress'), ('LASER', 'paused'),
+                ('LASER', 'completed'), ('Strantza', 'started')], 1)]
+        self.invoke.side_effect = lambda server, tool, args: epoptia_read.workstation_wip(rows, **args)
+        sid = self.session()
+        for index, station in enumerate(('LASER', 'laser')):
+            result = self.tool(sid, 'station_wip', {'workstation': station}, f'laser_{index}').json
+            self.assertEqual(result['status'], 'completed')
+            self.assertEqual([item['step_status'] for item in result['result']['items']],
+                             ['started', 'in_progress', 'paused'])
+            self.assertEqual(result['result']['counts_by_workstation'], {'LASER': 3})
+            self.invoke.assert_awaited_with('Epoptia_MES', 'workstation_wip', {'workstation': station})
+
+    def test_wol_and_all_station_voice_queries_reuse_gateway_actions(self):
+        sid = self.session()
+        for name, args, upstream in [('wol_status', {'wol_id': 123}, 'get_wol_status'),
+                                     ('workstation_wip', {}, 'workstation_wip')]:
+            result = self.tool(sid, name, args, name).json
+            self.assertEqual(result['result'], self.invoke.return_value)
+            self.invoke.assert_awaited_with('Epoptia_MES', upstream, args)
+
+    def test_voice_preserves_missing_data_and_upstream_failures(self):
+        sid = self.session()
+        for index, payload in enumerate([{'ok': False, 'error': 'WOL not found'},
+                                        {'items': [], 'truncated': True}]):
+            self.invoke.return_value = payload
+            self.assertEqual(self.tool(sid, 'wol_status', {'wol_id': 123}, f'read_{index}').json['result'], payload)
+        self.invoke.side_effect = TimeoutError('synthetic private detail')
+        self.assertEqual(self.tool(sid, call_id='failed').json,
+                         {'ok': False, 'status': 'upstream_unavailable', 'retry_safe': True,
+                          'failure_stage': 'unexpected_error', 'error_category': 'read_timeout'})
 
     def test_unknown_and_malformed_tool_calls_are_denied(self):
         sid = self.session()
@@ -246,6 +282,9 @@ class HTTPSContractTest(unittest.TestCase):
             config = json.loads(call.kwargs['files']['session'][1])
             self.assertEqual(config['type'], 'realtime')
             self.assertEqual(config['tools'], tool_schema())
+            self.assertIn('τι τρέχει στο laser;', config['instructions'])
+            self.assertIn('with workstation LASER', config['instructions'])
+            self.assertIn('call wol_status with wol_id', config['instructions'])
             self.assertNotIn('synthetic-key', json.dumps(config))
             transport.stop('rtc_synthetic')
             self.assertTrue(client.post.call_args.args[0].endswith('/rtc_synthetic/hangup'))

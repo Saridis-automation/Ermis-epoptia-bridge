@@ -1,0 +1,12 @@
+{
+  "cause_category": "undetermined_runtime_inspection_restricted",
+  "gateway_target_resolved": true,
+  "local_listener_ok": false,
+  "local_http_ok": false,
+  "config_mismatch_found": false,
+  "fix_applied": false,
+  "tests_passed": 8,
+  "tests_failed": 0,
+  "implementation_ready": false,
+  "restart_required_services": []
+}
