@@ -60,6 +60,12 @@ Keep the MES / system-admin split.
   `epoptia_throttle.call()` (one request at a time across all processes, ≥1 s between reads,
   ≥2 s around writes). HTTP 429/403 writes `state/epoptia_halt.json` and stops everything — no
   automatic retries; only the user clears it (`venv/bin/python epoptia_throttle.py clear --confirm`).
+- `ermis-dashboard` runs with `ProtectSystem=strict` + `ProtectHome=read-only`; only
+  `state/` is writable via `/etc/systemd/system/ermis-dashboard.service.d/epoptia-state.conf`
+  (`ReadWritePaths=`). Before any change that writes files, check each unit's sandbox
+  (`systemctl show <unit> -p ProtectHome -p ProtectSystem -p ReadWritePaths`). The MCP units
+  have no sandbox. Restarting an MCP unit also restarts its tunnel (`Requires=`). sudo without
+  password covers only `systemctl restart` of the two MCP and two tunnel units, not the dashboard.
 - Tests: run `scripts/run_offline_tests.sh` (offline guard, temp throttle state). Never run tests
   directly with the real `state/` dir — a mocked 403 would halt production.
 
