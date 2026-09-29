@@ -12,8 +12,10 @@ function deadlineLabel(value) {
 let observedAt = null;
 let state = "loading";
 let lastModel = null;
+let freshnessMs = 120000;
+let halt = null;
 function status() {
-  const stale = ["live", "online"].includes(state) && Date.now() - Date.parse(observedAt) > 120000;
+  const stale = ["live", "online"].includes(state) && Date.now() - Date.parse(observedAt) > freshnessMs;
   const current = stale ? "stale" : state;
   el("data-status").dataset.state = current;
   el("data-status").textContent = {
@@ -21,6 +23,7 @@ function status() {
     live: "● Ζωντανά δεδομένα", online: "● Ζωντανά δεδομένα", stale: "● Παλαιά δεδομένα",
     partial: "● Μερικώς διαθέσιμα δεδομένα",
     offline: "● Χωρίς σύνδεση · τα δεδομένα δεν ενημερώνονται",
+    halted: `● Σταματημένο · το Epoptia απάντησε HTTP ${halt?.http_status ?? "—"} · χρειάζεται χειροκίνητη επαναφορά`,
     disconnected: "● Χωρίς σύνδεση · τα δεδομένα δεν ενημερώνονται"
   }[current];
 }
@@ -45,7 +48,7 @@ function sourceNotes(data) {
     const meta = data.sources?.[source] ?? {};
     const at = data.field_observed_at?.[field];
     const age = at ? Math.max(0, Math.floor((Date.now() - Date.parse(at)) / 60000)) : null;
-    const stale = meta.stale || data.field_status?.[field] === "stale" || (at && Date.now() - Date.parse(at) > 120000);
+    const stale = meta.stale || data.field_status?.[field] === "stale" || (at && Date.now() - Date.parse(at) > freshnessMs);
     const failed = Boolean(meta.failure_reason);
     const label = failed ? (meta.last_success ? "Σφάλμα ενημέρωσης · προηγούμενη επιτυχής ανάγνωση" : "Σφάλμα ενημέρωσης · μη διαθέσιμα δεδομένα") :
       stale ? "Παλαιά δεδομένα" : ({available: "Ενημερωμένα δεδομένα", refreshing: "Ανανέωση σε εξέλιξη",
@@ -185,9 +188,11 @@ async function refresh() {
     const response = await fetch("/api/dashboard", {cache:"no-store", signal:controller.signal});
     if (!response.ok) throw new Error("Unavailable");
     const data = await response.json();
-    if (data.schema_version !== 1 || !["loading", "live", "online", "partial", "stale", "offline"].includes(data.data_status)) throw new Error("Invalid model");
+    if (data.schema_version !== 1 || !["loading", "live", "online", "partial", "stale", "offline", "halted"].includes(data.data_status)) throw new Error("Invalid model");
     render(data);
     state = data.data_status;
+    halt = data.halt ?? null;
+    if (typeof data.freshness_seconds === "number" && data.freshness_seconds > 0) freshnessMs = data.freshness_seconds * 1000;
     observedAt = data.observed_at;
   } catch {
     state = "disconnected";

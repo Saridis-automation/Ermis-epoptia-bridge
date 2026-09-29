@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 from dashboard.provider import LocalEpoptiaProvider
 from dashboard.adapter import map_snapshot
+from dashboard.schedule import freshness_seconds
 from test_dashboard_orders import project, wol
 
 NOW=datetime(2026,9,8,12,tzinfo=timezone.utc)
@@ -29,7 +30,7 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
         now=[NOW]; p=LocalEpoptiaProvider(read=read,clock=lambda:now[0])
         await p.snapshot();first=p.core_snapshot()
         p.read=AsyncMock(side_effect=ValueError('synthetic private detail'))
-        now[0]+=timedelta(seconds=121)
+        now[0]+=timedelta(seconds=freshness_seconds(NOW)+1)
         await p.snapshot();s=p.core_snapshot()
         self.assertEqual(s['canonical_orders'],first['canonical_orders'])
         self.assertEqual(s['order_generation'],1)

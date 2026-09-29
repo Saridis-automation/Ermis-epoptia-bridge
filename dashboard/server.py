@@ -9,13 +9,17 @@ from threading import Event, Lock, Thread
 from time import monotonic
 from copy import deepcopy
 
-from .adapter import map_snapshot, timestamp, SNAPSHOT_FRESHNESS_SECONDS
+import epoptia_throttle
+from .adapter import map_snapshot, timestamp
 from .provider import LocalEpoptiaProvider, empty_snapshot
+from .schedule import freshness_seconds, refresh_delay
 
 
-def create_app(provider=None, clock=None, timer=monotonic, response_wait=0.1, cache_dir=None):
+def create_app(provider=None, clock=None, timer=monotonic, response_wait=0.1, cache_dir=None,
+               halted=None):
     app = Flask(__name__, static_folder="static", static_url_path="/static")
     clock = clock or (lambda: datetime.now(timezone.utc))
+    halted = halted or epoptia_throttle.halted
 
     provider = provider if provider is not None else LocalEpoptiaProvider(clock=clock, cache_dir=cache_dir)
     optional_provider = provider if (callable(getattr(type(provider), 'refresh_optional', None))
@@ -23,11 +27,10 @@ def create_app(provider=None, clock=None, timer=monotonic, response_wait=0.1, ca
     initial = provider.initial_snapshot if optional_provider else None
     cached = map_snapshot(initial, clock()) if initial else None
     next_optional = 0
-    optional_refreshing = Event()
     core_provider = provider if callable(getattr(type(provider), "refresh_core", None)) else None
     core_due = {tool: 0 for tool in getattr(provider, "refresh_sources", ("production_overview", "workstation_wip"))}
-    core_running = set()
     next_read = 0
+    busy = False
     lock = Lock()
 
     @app.after_request
@@ -44,6 +47,9 @@ def create_app(provider=None, clock=None, timer=monotonic, response_wait=0.1, ca
     def index():
         return app.send_static_file("index.html")
 
+    def next_due():
+        return timer() + refresh_delay(clock())
+
     def refresh_optional():
         nonlocal next_optional
         try:
@@ -53,15 +59,7 @@ def create_app(provider=None, clock=None, timer=monotonic, response_wait=0.1, ca
             pass
         finally:
             with lock:
-                next_optional = timer() + 45
-                optional_refreshing.clear()
-
-    def start_optional():
-        with lock:
-            if optional_provider and not optional_refreshing.is_set() and timer() >= next_optional:
-                optional_refreshing.set()
-                Thread(target=refresh_optional, daemon=True,
-                       name='dashboard-optional-refresh').start()
+                next_optional = next_due()
 
     def refresh():
         nonlocal cached, next_read
@@ -74,35 +72,48 @@ def create_app(provider=None, clock=None, timer=monotonic, response_wait=0.1, ca
             model["data_status"] = "offline"
         with lock:
             cached = model
-            next_read = timer() + 45
-            refreshing.clear()
-        start_optional()
+            next_read = next_due()
 
     def refresh_core(tool):
         try:
             asyncio.run(core_provider.refresh_core(tool))
         finally:
             with lock:
-                core_due[tool] = timer() + 45
-                core_running.discard(tool)
-            start_optional()
+                core_due[tool] = next_due()
 
-    refreshing = Event()
+    def run_cycle(tools, legacy, optional):
+        # One worker, one source at a time: Epoptia never sees parallel scans.
+        nonlocal busy
+        try:
+            for tool in tools:
+                if halted() is not None:
+                    break
+                refresh_core(tool)
+            if legacy and halted() is None:
+                refresh()
+            if optional and halted() is None:
+                refresh_optional()
+        finally:
+            with lock:
+                busy = False
 
     def schedule():
-        if core_provider:
-            with lock:
-                for tool in core_due:
-                    if tool not in core_running and timer() >= core_due[tool]:
-                        core_running.add(tool)
-                        Thread(target=refresh_core, args=(tool,), daemon=True,
-                               name='dashboard-refresh').start()
-        else:
-            with lock:
-                if not refreshing.is_set() and timer() >= next_read:
-                    refreshing.set()
-                    Thread(target=refresh, daemon=True, name='dashboard-refresh').start()
-        start_optional()
+        nonlocal busy
+        # A halt (HTTP 429/403) stops all refreshes until a person clears it.
+        if halted() is not None:
+            return
+        with lock:
+            if busy:
+                return
+            now = timer()
+            tools = [tool for tool, due in core_due.items() if now >= due] if core_provider else []
+            legacy = not core_provider and now >= next_read
+            optional = bool(optional_provider) and now >= next_optional
+            if not (tools or legacy or optional):
+                return
+            busy = True
+        Thread(target=run_cycle, args=(tools, legacy, optional), daemon=True,
+               name='dashboard-refresh').start()
 
     stopped = Event()
     def scheduler():
@@ -111,6 +122,13 @@ def create_app(provider=None, clock=None, timer=monotonic, response_wait=0.1, ca
             stopped.wait(0.25)
     app.extensions['dashboard_stop'] = stopped
     Thread(target=scheduler, daemon=True, name='dashboard-scheduler').start()
+
+    def with_halt(model):
+        record = halted()
+        if record is not None:
+            model["data_status"] = "halted"
+            model["halt"] = {key: record.get(key) for key in ("halted_at", "http_status", "path")}
+        return model
 
     @app.get("/api/dashboard")
     def dashboard():
@@ -123,7 +141,7 @@ def create_app(provider=None, clock=None, timer=monotonic, response_wait=0.1, ca
             model = map_snapshot(empty_snapshot(now), now)
             model.update(data_status="loading", observed_at=None)
         elif not core_provider and model["data_status"] in ("live", "partial"):
-            if (clock() - timestamp(model["observed_at"])).total_seconds() > SNAPSHOT_FRESHNESS_SECONDS:
+            if (clock() - timestamp(model["observed_at"])).total_seconds() > freshness_seconds(clock()):
                 model["data_status"] = "stale"
         if optional_provider:
             optional = optional_provider.optional_snapshot()
@@ -132,7 +150,7 @@ def create_app(provider=None, clock=None, timer=monotonic, response_wait=0.1, ca
                     enrichment = map_snapshot(optional, clock())
                 except (ValueError, TypeError, AttributeError, KeyError):
                     # Corrupt optional data must never break the cached core API.
-                    return jsonify(model)
+                    return jsonify(with_halt(model))
                 for key in ('urgent_orders', 'urgent_orders_status'):
                     model[key] = enrichment[key]
                 for key in ('overdue_work', 'completed_today'):
@@ -141,7 +159,7 @@ def create_app(provider=None, clock=None, timer=monotonic, response_wait=0.1, ca
                     model['field_status'][key] = enrichment['field_status'][key]
                     if key in enrichment['field_observed_at']:
                         model['field_observed_at'][key] = enrichment['field_observed_at'][key]
-        return jsonify(model)
+        return jsonify(with_halt(model))
 
     @app.get("/health")
     def health():

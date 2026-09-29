@@ -56,6 +56,12 @@ Keep the MES / system-admin split.
   write (timestamp, payload, response) to `logs/epoptia_writes.log`; keep write tools separate
   from read tools.
 - Do not remove `/root/ermis-login-recovery-err_ra_7`.
+- Epoptia once blocked our IP for rapid requests. Every HTTP call to Epoptia goes through
+  `epoptia_throttle.call()` (one request at a time across all processes, ≥1 s between reads,
+  ≥2 s around writes). HTTP 429/403 writes `state/epoptia_halt.json` and stops everything — no
+  automatic retries; only the user clears it (`venv/bin/python epoptia_throttle.py clear --confirm`).
+- Tests: run `scripts/run_offline_tests.sh` (offline guard, temp throttle state). Never run tests
+  directly with the real `state/` dir — a mocked 403 would halt production.
 
 ## First session checklist
 1. Read-only audit: host, `git status/log/diff --stat`, service states, `ss -ltnp`, dashboard HTTP

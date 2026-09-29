@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import epoptia_read
+import epoptia_throttle
 import report_discovery as discovery
 
 
@@ -193,7 +194,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(len(result['landing_paths']), 4)
 
     def test_redirect_http_and_non_html_are_not_parsed(self):
-        for status, mime in ((302, 'text/html'), (403, 'text/html'), (200, 'application/json')):
+        for status, mime in ((302, 'text/html'), (200, 'application/json')):
             with self.subTest(status=status, mime=mime):
                 session = Mock()
                 session.get.return_value = response('<a href="/reports">report</a>', status, mime)
@@ -201,6 +202,15 @@ class DiscoveryTests(unittest.TestCase):
                 self.assertEqual(result['status'], 'partial')
                 self.assertEqual(result['route_candidates'], [])
                 session.get.assert_called_once()
+
+    def test_forbidden_page_halts_discovery(self):
+        session = Mock()
+        session.get.return_value = response('<a href="/reports">report</a>', 403, 'text/html')
+        self.addCleanup(epoptia_throttle.default().clear)
+        result = discovery.discover(BASE, session)
+        self.assertEqual(result['route_candidates'], [])
+        session.get.assert_called_once()
+        self.assertEqual(epoptia_throttle.halted()['http_status'], 403)
 
     def test_size_time_and_exception_fail_closed(self):
         session = Mock()

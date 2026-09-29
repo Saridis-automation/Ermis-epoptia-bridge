@@ -91,3 +91,28 @@ def _os_system(cmd):
 
 
 os.system = _os_system
+
+
+# Epoptia throttle: tests must never touch the production state/ directory (a
+# mocked 403 would otherwise write the real halt switch) and must not sleep.
+# Each test starts with a clear halt switch so one test cannot halt the next.
+try:
+    import epoptia_throttle
+except ImportError:
+    epoptia_throttle = None
+if epoptia_throttle is not None:
+    import atexit
+    import shutil
+    import tempfile
+    import unittest
+
+    _state_dir = tempfile.mkdtemp(prefix="ermis-throttle-test-")
+    atexit.register(shutil.rmtree, _state_dir, True)
+    epoptia_throttle._default = epoptia_throttle.Throttle(_state_dir, sleep=lambda seconds: None)
+    _run = unittest.TestCase.run
+
+    def _run_with_clear_halt(self, *args, **kwargs):
+        epoptia_throttle._default.clear()
+        return _run(self, *args, **kwargs)
+
+    unittest.TestCase.run = _run_with_clear_halt

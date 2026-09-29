@@ -6,6 +6,8 @@ from threading import Lock
 from time import monotonic
 from urllib.parse import urlsplit
 
+import epoptia_throttle
+
 ROUTE = '/planning/calendar'
 MAX_BYTES = 2 * 1024 * 1024
 MAX_SECONDS = 5
@@ -109,7 +111,7 @@ def fetch_calendar(base_url, session=None, *, authenticated=False, clock=monoton
             return result('calendar_invalid_origin')
         url = origin.scheme + '://' + origin.netloc + ROUTE
         deadline = clock() + MAX_SECONDS
-        with session.get(url, headers={'Accept': 'text/html'}, stream=True,
+        with epoptia_throttle.call(session.get, url, headers={'Accept': 'text/html'}, stream=True,
                          timeout=MAX_SECONDS, allow_redirects=False) as response:
             if 300 <= response.status_code < 400:
                 return result('calendar_auth_missing')

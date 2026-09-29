@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import epoptia_read
+import epoptia_throttle
 import report_discovery as discovery
 from tests.test_report_discovery import BASE, response
 
@@ -78,7 +79,6 @@ class TargetReportTests(unittest.TestCase):
 
     def test_safe_target_failure_categories(self):
         for status, mime, failure in ((302, 'text/html', 'auth_redirect'),
-                                     (403, 'text/html', 'authentication_failed'),
                                      (503, 'application/json', 'http_error'),
                                      (200, 'private/mime; token=PRIVATE', 'unexpected_content_type')):
             with self.subTest(status=status):
@@ -96,6 +96,19 @@ class TargetReportTests(unittest.TestCase):
             self.assertEqual(result['target_page']['failure_category'], failure)
             self.assertIsNone(result['target_page']['http_status_class'])
             self.assertNotIn('PRIVATE', json.dumps(result))
+
+    def test_forbidden_target_halts_all_epoptia_requests(self):
+        session = Mock()
+        session.get.return_value = response('PRIVATE', 403, 'text/html')
+        self.addCleanup(epoptia_throttle.default().clear)
+        result = discovery.discover_workorder_reports(BASE, session, html_get=epoptia_read._web_html_get)
+        self.assertEqual(result['target_page']['failure_category'], 'request_failed')
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        self.assertEqual(epoptia_throttle.halted()['http_status'], 403)
+        session.get.reset_mock()
+        with self.assertRaises(epoptia_throttle.EpoptiaHalted):
+            epoptia_read._web_html_get(session, BASE + '/reports')
+        session.get.assert_not_called()
 
     def test_inline_dynamic_urls_are_not_literal_endpoints(self):
         result, session = self.discover('''<script>

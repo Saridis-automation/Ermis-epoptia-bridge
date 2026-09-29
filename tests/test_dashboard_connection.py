@@ -15,7 +15,7 @@ from time import monotonic
 
 import requests
 import epoptia_read
-from dashboard.provider import LocalEpoptiaProvider
+from dashboard.provider import LocalEpoptiaProvider, WOL_SNAPSHOT_REUSE_SECONDS
 from dashboard.adapter import map_snapshot
 from dashboard.server import create_app
 
@@ -194,7 +194,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_shared_snapshot_expires(self):
         await self.provider.refresh_core('workstation_wip')
-        self.provider.read._wol_at = monotonic() - 31
+        self.provider.read._wol_at = monotonic() - WOL_SNAPSHOT_REUSE_SECONDS - 1
         await self.provider.refresh_core('production_overview')
         self.assertEqual(self.get.call_count, 4)
 
@@ -369,7 +369,16 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(census['native_mean_order_progress_percent'], 75)
         self.assertEqual(census['native_progress_coverage_percent'], 50)
 
-    async def test_independent_default_workers_and_nonblocking_get(self):
+    async def wait_idle(self, *tools):
+        for _ in range(400):
+            if not any(self.provider.read.busy(tool) for tool in tools):
+                return
+            await asyncio.sleep(0.005)
+        self.fail('reader still busy')
+
+    async def test_blocked_request_serializes_sources_and_get_stays_nonblocking(self):
+        # One Epoptia request at a time: while production_overview's request is
+        # in flight, workstation_wip sends nothing; cached GETs never block.
         self.block = 'production_overview'
         task = asyncio.create_task(self.provider.refresh_core(self.block))
         for _ in range(100):
@@ -378,12 +387,12 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.005)
         self.assertTrue(self.entered.is_set())
         try:
-            for _ in range(4):
-                await self.provider.refresh_core('workstation_wip')
-            self.assertEqual(self.provider.sources['workstation_wip']['generation'], 4)
+            before = len(self.calls)
+            stations = asyncio.create_task(self.provider.refresh_core('workstation_wip'))
+            await asyncio.sleep(0.1)
+            self.assertEqual(len(self.calls), before)
             app = create_app(self.provider, timer=lambda: -1)
             app.extensions['dashboard_stop'].set()
-            before = len(self.calls)
             with app.test_client() as client:
                 for _ in range(3):
                     start = monotonic()
@@ -393,7 +402,9 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self.release.set()
             await task
+        await stations
         self.assertEqual(self.provider.sources['production_overview']['generation'], 1)
+        self.assertEqual(self.provider.sources['workstation_wip']['generation'], 1)
 
     async def test_timeout_stops_next_page_and_does_not_count_busy_retries(self):
         self.block = 'production_overview'
@@ -406,13 +417,15 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                 await self.provider.refresh_core('production_overview')
                 await self.provider.refresh_core('workstation_wip')
             self.assertEqual(self.provider.sources['production_overview'], meta)
-            self.assertEqual(self.provider.sources['workstation_wip']['generation'], 3)
+            # The hung request still holds the shared Epoptia lock.
+            self.assertEqual(self.provider.sources['workstation_wip']['generation'], 0)
         self.release.set()
-        for _ in range(100):
-            if not self.provider.read.busy('production_overview'):
-                break
-            await asyncio.sleep(0.005)
-        self.assertFalse(self.provider.read.busy('production_overview'))
+        await self.wait_idle('production_overview', 'workstation_wip')
+        self.block = None
+        await self.provider.refresh_core('workstation_wip')
+        meta = self.provider.sources['workstation_wip']
+        self.assertIsNone(meta['failure_reason'])
+        self.assertEqual(meta['generation'], meta['refresh_sequence'])
         self.assertEqual(self.provider.sources['production_overview']['http_requests'], 1)
         self.assertEqual(self.provider.sources['production_overview']['generation'], 0)
 

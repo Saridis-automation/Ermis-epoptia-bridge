@@ -8,6 +8,8 @@ from urllib.parse import unquote, urlsplit
 
 import requests
 from contextlib import contextmanager
+
+import epoptia_throttle
 from contextvars import ContextVar
 from time import monotonic
 
@@ -56,7 +58,7 @@ def _workorderlines_page(base_url, page, *, headers=None, session=None):
     """Shared WOL transport; retain raw envelopes before normalization."""
     client = session if session is not None else requests
     options = {} if headers is None else {'headers': headers}
-    return client.get(base_url.rstrip('/') + WORKORDERLINES_ENDPOINT,
+    return epoptia_throttle.call(client.get, base_url.rstrip('/') + WORKORDERLINES_ENDPOINT,
                       params={'page': page, 'limit': 100}, timeout=_request_timeout(),
                       allow_redirects=False, **options)
 
@@ -306,14 +308,14 @@ def _web_login(session, base_url, username, password):
     login_url = base_url.rstrip('/') + '/login'
     session.headers.update({'Origin': f'{parts.scheme}://{parts.netloc}',
                             'Referer': login_url})
-    response = session.get(login_url, timeout=20, allow_redirects=True)
+    response = epoptia_throttle.call(session.get, login_url, timeout=20, allow_redirects=True)
     if response.status_code != 200:
         return False
     parser = _LoginToken()
     parser.feed(response.text)
     if not parser.token:
         return False
-    response = session.post(login_url, data={
+    response = epoptia_throttle.call(session.post, login_url, data={
         '_token': parser.token, 'username': username, 'password': password,
     }, timeout=20, allow_redirects=True)
     final_url = urlsplit(response.url)
@@ -375,7 +377,7 @@ def _web_html_get(session, url, *, timeout=None, stream=False):
                    allow_redirects=False)
     if stream:
         options['stream'] = True
-    return session.get(url, **options)
+    return epoptia_throttle.call(session.get, url, **options)
 
 
 def _parent_actual_completion(base_url, session, workorder_id, authenticated, *, page_sink=None):
@@ -671,8 +673,8 @@ def _scan_production_pages(base_url, session, source, consume):
             for cookie in session.cookies:
                 if cookie.name == 'XSRF-TOKEN':
                     session.headers['X-XSRF-TOKEN'] = unquote(cookie.value)
-            response = session.post(
-                base_url.rstrip('/') + endpoint,
+            response = epoptia_throttle.call(
+                session.post, base_url.rstrip('/') + endpoint,
                 json={'onlyList': True, 'page': page}, timeout=_request_timeout(),
                 allow_redirects=False)
             source['http_status'] = response.status_code

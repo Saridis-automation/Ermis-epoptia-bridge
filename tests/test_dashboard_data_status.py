@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from dashboard.adapter import SNAPSHOT_FRESHNESS_SECONDS
+from dashboard.schedule import freshness_seconds
 from dashboard.provider import LocalEpoptiaProvider
 from dashboard.server import create_app
 from dashboard.orders import OrderCensus
@@ -66,15 +66,16 @@ class DataStatusTests(unittest.IsolatedAsyncioTestCase):
         for meta in model['sources'].values():
             self.assertEqual(meta['failure_reason'], 'read_unavailable')
             self.assertIsNotNone(meta['last_failure'])
-        self.now += timedelta(seconds=76)
+        self.now += timedelta(seconds=freshness_seconds(self.now) - 44)
         self.assertEqual(self.model()['data_status'], 'offline')
 
     async def test_missing_stale_and_boundary(self):
         await self.provider.refresh_core('production_overview')
         self.assertEqual(self.model()['data_status'], 'partial')
         await self.provider.refresh_core('workstation_wip')
-        for seconds, expected in ((0, 'online'), (SNAPSHOT_FRESHNESS_SECONDS, 'online'),
-                                  (SNAPSHOT_FRESHNESS_SECONDS + 0.001, 'offline')):
+        fresh = freshness_seconds(NOW)
+        for seconds, expected in ((0, 'online'), (fresh, 'online'),
+                                  (fresh + 0.001, 'offline')):
             self.now = NOW + timedelta(seconds=seconds)
             self.assertEqual(self.model()['data_status'], expected)
         await self.provider.refresh_core('workstation_wip')

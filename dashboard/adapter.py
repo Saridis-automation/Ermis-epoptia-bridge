@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 import math
 from dashboard.station_activity import STATION_CAPACITY_TARGETS, station_name, star_state
 from dashboard.station_load import load_percent
+from dashboard.schedule import freshness_seconds
 from zoneinfo import ZoneInfo
 ATHENS = ZoneInfo("Europe/Athens")
-SNAPSHOT_FRESHNESS_SECONDS = 120
 
 
 def number(value, *, percent=False):
@@ -91,11 +91,11 @@ def map_snapshot(snapshot, now):
         statuses.setdefault(key, 'available' if value is not None else 'unavailable')
         if value is not None and key in observations:
             at = timestamp(observations[key])
-            if (now - at).total_seconds() > SNAPSHOT_FRESHNESS_SECONDS or (key in ('overdue_work', 'completed_today')
+            if (now - at).total_seconds() > freshness_seconds(now) or (key in ('overdue_work', 'completed_today')
                                                    and at.astimezone(ATHENS).date() != now.astimezone(ATHENS).date()):
                 statuses[key] = 'stale'
     for key in ('active_production', 'workstations'):
-        if key in observations and (now - timestamp(observations[key])).total_seconds() > SNAPSHOT_FRESHNESS_SECONDS:
+        if key in observations and (now - timestamp(observations[key])).total_seconds() > freshness_seconds(now):
             statuses[key] = 'stale'
     # A relative denominator needs every visible count and a successful census.
     station_source = (snapshot.get('sources') or {}).get('workstation_wip', {})
@@ -123,7 +123,8 @@ def map_snapshot(snapshot, now):
         identity_version=tracker.get('identity_version'),
         recovery_status=tracker.get('recovery_status', 'awaiting_baseline'))
     return dict(schema_version=1, observed_at=observed.isoformat(),
-                data_status=snapshot.get("data_status") or ("loading" if snapshot.get("loading") else "offline" if snapshot.get("offline") else "stale" if age > SNAPSHOT_FRESHNESS_SECONDS else "partial" if snapshot.get("partial") else "live"),
+                data_status=snapshot.get("data_status") or ("loading" if snapshot.get("loading") else "offline" if snapshot.get("offline") else "stale" if age > freshness_seconds(now) else "partial" if snapshot.get("partial") else "live"),
+                freshness_seconds=freshness_seconds(now),
                 overall_progress_percent=None,
                 native_mean_order_progress_percent=number(active.get("native_active_production_progress_percent"), percent=True) if complete else None,
                 capacity_missing_inputs=["standard_time_per_step", "remaining_quantity", "available_station_time", "capacity_horizon"],

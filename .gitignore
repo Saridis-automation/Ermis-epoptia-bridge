@@ -28,3 +28,6 @@ __pycache__/
 /epoptia-browser-profile/
 /epoptia-login-profile/
 /epoptia-console.secret
+
+# Epoptia throttle lock, last-request time and halt switch
+state/

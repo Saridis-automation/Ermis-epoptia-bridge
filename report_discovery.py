@@ -10,6 +10,8 @@ import re
 import time
 from urllib.parse import urljoin, urlsplit
 
+import epoptia_throttle
+
 MAX_ROUTES = 20
 MAX_ENDPOINTS = 30
 MAX_FOLLOW = 3
@@ -255,7 +257,7 @@ def _failure(result, url, reason, status=None):
 
 
 def _read_page(session, url, remaining, deadline, result):
-    with session.get(url, headers={'Accept': 'text/html'},
+    with epoptia_throttle.call(session.get, url, headers={'Accept': 'text/html'},
                      timeout=min(3, remaining), allow_redirects=False, stream=True) as response:
         if response.status_code != 200:
             _failure(result, url, 'auth_redirect' if 300 <= response.status_code < 400

@@ -10,6 +10,7 @@ import httpx2
 from dashboard.adapter import map_snapshot
 from dashboard.provider import LocalEpoptiaProvider
 from ermis_gateway import Gateway, call_existing
+from dashboard.schedule import MAX_FRESHNESS_SECONDS
 from ermis_gateway_cache import CACHE_URL, call_cached_production, cached_overview
 import ermis_system_server as system
 
@@ -123,7 +124,7 @@ class CachedProductionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(model, original)
 
     async def test_stale_and_future_success_rejected(self):
-        for age in (121, -30):
+        for age in (MAX_FRESHNESS_SECONDS + 60, -30):
             model = snapshot()
             model["sources"]["production_overview"]["last_success"] = (
                 datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat()

@@ -1,5 +1,6 @@
 import os
 import requests
+import epoptia_throttle
 from dotenv import load_dotenv
 from mcp.server.mcpserver import MCPServer
 import epoptia_read
@@ -30,7 +31,7 @@ def find_wol(wol_id: int):
     Search Epoptia Work Order Lines, starting from the newest page.
     """
 
-    first_response = requests.get(
+    first_response = epoptia_throttle.call(requests.get,
         f"{BASE_URL}/api/3.03/workorderlines",
         headers=HEADERS,
         params={
@@ -49,7 +50,7 @@ def find_wol(wol_id: int):
     # Search newest records first
     for page in range(total_pages, 0, -1):
 
-        response = requests.get(
+        response = epoptia_throttle.call(requests.get,
             f"{BASE_URL}/api/3.03/workorderlines",
             headers=HEADERS,
             params={

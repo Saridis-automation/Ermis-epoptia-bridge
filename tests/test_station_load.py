@@ -6,6 +6,7 @@ import unittest
 from dashboard.adapter import map_snapshot
 from dashboard.provider import empty_snapshot
 from dashboard.station_activity import StationActivity
+from dashboard.schedule import freshness_seconds
 from dashboard.stations import collect_stations
 
 NOW = datetime(2026, 9, 14, 12, tzinfo=timezone.utc)
@@ -71,7 +72,7 @@ class StationLoadTests(unittest.TestCase):
         data = snapshot((8, 0))
         data['station_coverage']['available'] = False
         self.assertEqual(percentages(data), [None, None])
-        self.assertEqual(percentages(snapshot((8, 0)), NOW + timedelta(seconds=121)), [None, None])
+        self.assertEqual(percentages(snapshot((8, 0)), NOW + timedelta(seconds=freshness_seconds(NOW) + 1)), [None, None])
         data = snapshot((8, 0))
         data['field_status']['urgent_orders'] = 'partial'
         self.assertEqual(percentages(data), [100, 0])

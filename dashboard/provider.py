@@ -10,13 +10,17 @@ import epoptia_read
 import epoptia_queries
 from dashboard.cache import SnapshotCache
 from dashboard.completed_jobs import CompletedJobsTracker
-from dashboard.adapter import map_snapshot, timestamp, SNAPSHOT_FRESHNESS_SECONDS
+from dashboard.adapter import map_snapshot, timestamp
+from dashboard.schedule import freshness_seconds
 
 from dashboard.station_activity import StationActivity, STATION_CAPACITY_TARGETS
 
 WORKSTATIONS = tuple(STATION_CAPACITY_TARGETS)
 READS = {"production_overview": {"dashboard": True}, "workstation_wip": {"dashboard": True}}
-READ_TIMEOUT = 90
+# A full scan is ~40-70 throttled requests (1 s apart), so allow several minutes.
+READ_TIMEOUT = 480
+# production_overview and workstation_wip run back to back and share one WOL scan.
+WOL_SNAPSHOT_REUSE_SECONDS = 120
 OPTIONAL_READ_TIMEOUT = 5
 
 
@@ -92,7 +96,7 @@ class DirectReader:
             self._snapshot_generation += 1
 
     def _shared_wols(self, tool, settings, cancelled):
-        # Each source may consume a snapshot once, within 30 seconds. Repeated
+        # Each source may consume a snapshot once, within WOL_SNAPSHOT_REUSE_SECONDS. Repeated
         # refreshes perform a fresh scan. No global cache or credentials retained.
         with self._wol_lock:
             if cancelled.is_set():
@@ -100,7 +104,7 @@ class DirectReader:
             generation = self._snapshot_generation
             if (self._wol_snapshot is None or self._wol_generation != generation
                     or tool in self._wol_consumers
-                    or monotonic() - self._wol_at > 30):
+                    or monotonic() - self._wol_at > WOL_SNAPSHOT_REUSE_SECONDS):
                 snapshot = epoptia_queries.read_wol_snapshot(
                     settings['base_url'], settings['headers'],
                     routing_snapshot=lambda rows, complete: self._observe_routing(
@@ -315,7 +319,10 @@ class LocalEpoptiaProvider:
                 and value.get('complete') is True and isinstance(value.get('orders'), list))
 
     async def refresh_optional(self):
-        await asyncio.gather(*(self.refresh_core(name) for name in self.refresh_sources if name not in READS))
+        # Sequential on purpose: never send parallel requests to Epoptia.
+        for name in self.refresh_sources:
+            if name not in READS:
+                await self.refresh_core(name)
 
     def core_snapshot(self):
         now = self.clock()
@@ -334,7 +341,7 @@ class LocalEpoptiaProvider:
         def section(name, fields):
             item = good.get(name)
             meta = sources.get(name, {})
-            stale = bool(item and (now-timestamp(item['observed_at'])).total_seconds() > SNAPSHOT_FRESHNESS_SECONDS)
+            stale = bool(item and (now-timestamp(item['observed_at'])).total_seconds() > freshness_seconds(now))
             if name in sources:
                 sources[name]['stale'] = stale or meta.get('state') == 'cached'
             for field in fields:
@@ -386,7 +393,7 @@ class LocalEpoptiaProvider:
         for name in (order_source, 'workstation_wip'):
             item = good.get(name)
             recent = bool(item and 0 <= (now - timestamp(item['observed_at'])).total_seconds()
-                          <= SNAPSHOT_FRESHNESS_SECONDS)
+                          <= freshness_seconds(now))
             usable.append(recent)
         snapshot['data_status'] = 'online' if all(usable) else 'partial' if any(usable) else 'offline'
         if good:
@@ -400,7 +407,9 @@ class LocalEpoptiaProvider:
     async def snapshot(self):
         if isinstance(self.read, DirectReader):
             self.read.begin_snapshot()
-        await asyncio.gather(*(self.refresh_core(tool) for tool in READS), self.refresh_optional())
+        for tool in READS:
+            await self.refresh_core(tool)
+        await self.refresh_optional()
         return self.core_snapshot()
 
     def __call__(self):

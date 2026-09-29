@@ -3,12 +3,12 @@ import asyncio
 from datetime import datetime, timezone
 import math
 
-from dashboard.adapter import SNAPSHOT_FRESHNESS_SECONDS, timestamp
+from dashboard.adapter import timestamp
+from dashboard.schedule import freshness_seconds
 from ermis_gateway import UpstreamDiagnosticError, call_existing
 
 CACHE_URL = "http://127.0.0.1:8010/api/dashboard"
-# Dashboard schedules the next refresh 45s after completion (scans take ~65s).
-FRESHNESS_SECONDS = SNAPSHOT_FRESHNESS_SECONDS
+# Freshness follows the dashboard's production-hours refresh cadence.
 CACHE_TIMEOUT_SECONDS = 3
 MAX_CACHE_BYTES = 4 * 1024 * 1024
 
@@ -29,7 +29,7 @@ def cached_overview(model, now):
         generation = source["generation"]
         if type(generation) is not int or generation < 1:
             reject("cache_invalid")
-        if not 0 <= age <= FRESHNESS_SECONDS:
+        if not 0 <= age <= freshness_seconds(now):
             reject("cache_stale")
         if source["stale"] is not False or source["state"] not in ("available", "refreshing"):
             reject("cache_stale")
@@ -61,7 +61,7 @@ def cached_overview(model, now):
                 native_active_production_progress_source=orders["source"],
                 dashboard_orders=orders, sources=model["sources"],
                 cache=dict(url=CACHE_URL, last_success=source["last_success"],
-                           age_seconds=age, freshness_seconds=FRESHNESS_SECONDS))
+                           age_seconds=age, freshness_seconds=freshness_seconds(now)))
     completed = model.get("completed_today")
     # Optional snapshot data: omit invalid counts without deriving replacements.
     if (isinstance(completed, dict)

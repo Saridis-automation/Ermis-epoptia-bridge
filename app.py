@@ -1,5 +1,6 @@
 import os
 import requests
+import epoptia_throttle
 from flask import Flask, jsonify
 from dotenv import load_dotenv
 
@@ -27,7 +28,7 @@ def home():
 @app.route("/epoptia/test")
 def test_epoptia():
     try:
-        response = requests.get(
+        response = epoptia_throttle.call(requests.get,
             f"{BASE_URL}/api/3.03/test-connection",
             headers=HEADERS,
             timeout=10
@@ -44,7 +45,7 @@ def test_epoptia():
 
 def find_wol(wol_id):
     # Start from the newest page because recent WOLs are there.
-    first_response = requests.get(
+    first_response = epoptia_throttle.call(requests.get,
         f"{BASE_URL}/api/3.03/workorderlines",
         headers=HEADERS,
         params={"page": 1, "limit": 100},
@@ -56,7 +57,7 @@ def find_wol(wol_id):
     total_pages = first_data.get("numberOfPages", 0)
 
     for page in range(total_pages, 0, -1):
-        response = requests.get(
+        response = epoptia_throttle.call(requests.get,
             f"{BASE_URL}/api/3.03/workorderlines",
             headers=HEADERS,
             params={"page": page, "limit": 100},
