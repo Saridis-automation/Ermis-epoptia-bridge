@@ -2,7 +2,7 @@
 
 Speak to the user in Greek, addressing them in the singular (ενικός — "εσύ", not "εσείς"). Work as a partner: do the technical work yourself (shell, code, tests)
 instead of handing the user commands to run. Ask for a one-line "yes" only before irreversible or
-production-affecting actions (see Safety rules).
+cases listed in Safety rules.
 
 ## What ERMIS is
 Always-on integration server for SARIDIS on Ubuntu host `Ermis-server`, user `ermis`.
@@ -50,8 +50,18 @@ Keep the MES / system-admin split.
 ## Safety rules
 - Never print `.env` or API keys. Never disable AppArmor. No broad sudo.
 - Read-only inspection is always fine.
-- Ask the user first before: any write to Epoptia production data, installs, `apparmor_parser`,
-  running `bootstrap.sh install`/recovery, deleting files, restarting services, git push/reset.
+- Ask the user ONLY before: (1) any write to real Epoptia data, (2) rebooting the server or
+  upgrading the OS (apt upgrade / release upgrade), (3) git push.
+- Decide yourself, then tell the user in one line afterwards: restarting ERMIS services, deleting
+  temporary files, installing Python packages into `./venv`, git commit.
+- Before any restart, verify the change won't leave the service down: syntax/import check
+  (`venv/bin/python -m py_compile …` / import the module), `scripts/run_offline_tests.sh`, and for
+  unit-file changes `systemd-analyze verify`. After the restart confirm `systemctl is-active` and
+  the service's health endpoint / port (`ss -ltnp`, curl 127.0.0.1); if it fails, roll back the
+  change and restart again, then report.
+- Still off-limits regardless (standing prohibitions, not ask-rules): disabling AppArmor, running
+  `bootstrap.sh install`/recovery, removing `/root/ermis-login-recovery-err_ra_7`, clearing the
+  Epoptia halt file.
 - Epoptia writes: test on test/dummy records first; show a preview of the exact change; log every
   write (timestamp, payload, response) to `logs/epoptia_writes.log`; keep write tools separate
   from read tools.
