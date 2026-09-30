@@ -108,4 +108,10 @@
 
 - Σωστά ονόματα commands του API v3.03 για products/clients/workorders (τα 400 δεν κάνουν halt).
 - Σελίδα `/workflows/{id}` (επεξεργασία βημάτων) και `/workstations` — όχι ακόμα.
-- Τι επιστρέφει το `/products/store` (redirect; id;) — φαίνεται μόνο με πραγματική εγγραφή.
+
+## Πρώτη εγγραφή (2026-09-30)
+
+- `POST /products/store` (ERMIS-TEST, `is_active` off) → **302 → `/products`**. Δημιουργήθηκε **#1427**.
+- Η απάντηση δεν δίνει το id. Τα **ανενεργά προϊόντα δεν εμφανίζονται** στη λίστα
+  `/product/create` (ούτε με `term`, ούτε με `isactive=0`, που δείχνει τα διαγραμμένα).
+  Επιβεβαίωση γίνεται με `GET /products/{id}`: breadcrumb `#id (όνομα)`.
