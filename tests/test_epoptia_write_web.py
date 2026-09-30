@@ -95,6 +95,8 @@ class FakeSession:
     def get(self, url, **kwargs):
         path = url[len(BASE):]
         key = path.split("?")[0] + ("?term" if "?term=" in path else "?sortby" if "?sortby=" in path else "")
+        if key not in self.pages:
+            raise AssertionError(f"unexpected GET {path}")
         return self.pages[key].pop(0)
 
     def post(self, url, **kwargs):
@@ -204,6 +206,55 @@ class WebWriterTest(unittest.TestCase):
         with self.assertRaises(w.WriteError):
             self.writer(session).create_client("ERMIS-TEST", confirm=True)
         self.assertEqual(session.sent, [])
+
+    def assign_page(self, pid, *, empty=True, fields=()):
+        picker = 'templatePickerEmptyWorkflow' if empty else 'templatePicker'
+        link = "" if empty else f'<a href="{BASE}/product/{pid}/workflow/39">'
+        cf = "".join(f'<input type="text" class="form-control customField" data-id="{i}" value="">' for i in fields)
+        return Response(text=f"""<form id="assignFromTemplate" method="post" action="{BASE}/product/workflow/from-template">
+ <input type="hidden" name="_token" value="TOKENWF"><input type="hidden" name="sectionId" value="{pid}" />
+ <input type="hidden" name="templateId" /></form><select id="{picker}"></select>{link}{cf}""")
+
+    def workflow_list(self):
+        return Response(text='<select id="workflow_all"><option value="-1">x</option>'
+                             '<option value="39">ΨΥΓΕΙΟ ΒΙΤΡΙΝΑ ΧΩΡΙΣ ΑΠΟΘΗΚΗ v.2</option></select>')
+
+    def test_assign_workflow_preview_confirm_verify(self):
+        session = FakeSession({"/product/create": [self.workflow_list()] * 2,
+                               "/products/1500": [self.assign_page(1500), self.assign_page(1500),
+                                                  self.assign_page(1500, empty=False, fields=(6, 12))]},
+                              [Response(302, location=BASE + "/products/1500")])
+        writer = self.writer(session)
+        preview = writer.assign_workflow(1500, 39)
+        self.assertEqual(preview["payload"], {"_token": "<csrf>", "sectionId": "1500", "templateId": "39"})
+        self.assertEqual(session.sent, [])
+        result = writer.assign_workflow(1500, 39, confirm=True)
+        self.assertEqual(session.sent[0][0], "/product/workflow/from-template")
+        self.assertTrue(result["assigned"])
+        self.assertEqual(result["custom_field_ids"], [6, 12])
+
+    def test_assign_workflow_refuses_product_with_workflow_or_unknown_template(self):
+        session = FakeSession({"/product/create": [self.workflow_list()] * 2,
+                               "/products/1500": [self.assign_page(1500, empty=False)]})
+        with self.assertRaises(w.FormChanged):
+            self.writer(session).assign_workflow(1500, 39, confirm=True)
+        with self.assertRaises(w.WriteError):
+            self.writer(session).assign_workflow(1500, 999, confirm=True)
+        self.assertEqual(session.sent, [])
+
+    def test_workorder_custom_fields_and_multiline_comments(self):
+        args = self.workorder_args()
+        args["lines"][0].update(comments="Α\n• Β", customFields={"12": "180x85x120 cm"})
+        session = FakeSession({"/products/900": [self.assign_page(900, empty=False, fields=(12,))],
+                               "/workorders/create": [Response(text=WORKORDER_PAGE)]})
+        preview = self.writer(session).create_workorder(**args)
+        line = preview["step2"]["json"]["workorderLines"][0]
+        self.assertEqual(line["customFieldsValues"], {"12": "180x85x120 cm"})
+        self.assertEqual(line["comments"], "Α\n• Β")
+        args["lines"][0]["customFields"] = {"99": "x"}
+        session = FakeSession({"/products/900": [self.assign_page(900, empty=False, fields=(12,))]})
+        with self.assertRaises(w.WriteError):
+            self.writer(session).create_workorder(**args)
 
     def workorder_args(self):
         return dict(client_id=3, production_date="15-10-2026",

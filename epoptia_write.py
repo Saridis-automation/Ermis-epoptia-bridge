@@ -15,6 +15,7 @@ import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import html
 from html.parser import HTMLParser
 from pathlib import Path
 from types import MappingProxyType
@@ -118,6 +119,10 @@ PRODUCT_DELETE = FormSpec(
     "/product/create", "productDeleteForm", "POST", "/products/destroy/0",
     (("_method", "hidden", False), ("_token", "hidden", False)))
 
+PRODUCT_ASSIGN_WORKFLOW = FormSpec(
+    "/products/{id}", "assignFromTemplate", "POST", "/product/workflow/from-template",
+    (("_token", "hidden", False), ("sectionId", "hidden", False), ("templateId", "hidden", False)))
+
 CLIENT_CREATE = FormSpec(
     "/client/create", "clientCreateForm", "POST", "/clients/store",
     (("_token", "hidden", False), ("tag", "radio", False), ("name", "text", True),
@@ -209,6 +214,8 @@ class _PageParser(HTMLParser):
                 self._form["radios"].setdefault(key, []).append(a.get("value"))
             if key == "_token" and kind == "hidden":
                 self._form["token"] = a.get("value")
+            if kind == "hidden":
+                self._form.setdefault("hidden_values", {})[key] = a.get("value")
             if key == "_method" and kind == "hidden":
                 self._form["method_override"] = a.get("value")
             self._form["fields"].setdefault(key, (kind, "required" in a))
@@ -260,10 +267,10 @@ def _redact(value):
     return value
 
 
-def _clean_text(value, limit, *, allow_empty=False):
+def _clean_text(value, limit, *, allow_empty=False, multiline=False):
     if type(value) is not str or len(value) > limit or (not allow_empty and not value.strip()):
         raise WriteError("invalid text value")
-    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+    if any((ord(c) < 32 and not (multiline and c == "\n")) or ord(c) == 127 for c in value):
         raise WriteError("control characters are not allowed")
     return value
 
@@ -450,6 +457,69 @@ class WebWriter:
         self.log(action, "verified" if len(created) == 1 else "unverified", matches=created)
         return {"sent": True, "status": response.status_code, "location": location, "matches": created}
 
+    @staticmethod
+    def _custom_fields(values, index):
+        if type(values) is not dict:
+            raise WriteError(f"line {index}: customFields must be an object")
+        out = {}
+        for key, value in values.items():
+            if not str(key).isdigit():
+                raise WriteError(f"line {index}: custom field id {key!r} is not numeric")
+            out[str(int(key))] = _clean_text(value, 255)
+        return out
+
+    def product_custom_field_ids(self, product_id):
+        """Custom field ids defined on a product (from its /products/{id} page)."""
+        _, text = self._get_page(f"/products/{int(product_id)}")
+        return sorted({int(i) for i in re.findall(r'class="form-control customField" data-id="(\d+)"', text)})
+
+    def workflow_templates(self):
+        """{id: name} of the workflow templates offered for products."""
+        _, text = self._get_page("/product/create")
+        start = text.find('id="workflow_all"')
+        block = text[start:text.find("</select>", start)] if start >= 0 else ""
+        return {int(v): " ".join(html.unescape(n).split())
+                for v, n in re.findall(r'<option[^>]*value="(\d+)"[^>]*>(.*?)</option>', block, re.S)
+                if int(v) > 0}
+
+    def assign_workflow(self, product_id, template_id, *, confirm=False):
+        """Give a product WITHOUT a workflow a copy of a workflow template."""
+        action = "assign_workflow"
+        if type(product_id) is not int or product_id < 1 or type(template_id) is not int or template_id < 1:
+            raise WriteError("invalid product or template id")
+        templates = self.workflow_templates()
+        if template_id not in templates:
+            raise WriteError(f"workflow template {template_id} not offered")
+        spec = PRODUCT_ASSIGN_WORKFLOW
+        page = spec.page.format(id=product_id)
+        parser, text = self._get_page(page)
+        problems = self._check_form(parser, spec)
+        form = parser.forms.get(spec.form_id) or {}
+        if str((form.get("hidden_values") or {}).get("sectionId")) != str(product_id):
+            problems.append("sectionId does not match the product")
+        if 'id="templatePickerEmptyWorkflow"' not in text:
+            problems.append("product already has a workflow (would overwrite its settings)")
+        self.log(action, "form_check", page=page, ok=not problems, problems=problems)
+        if problems:
+            raise FormChanged("; ".join(problems))
+        payload = {"_token": form["token"], "sectionId": str(product_id), "templateId": str(template_id)}
+        preview = {"method": "POST", "path": spec.action, "content_type": "application/x-www-form-urlencoded",
+                   "payload": _redact(payload), "template_name": templates[template_id]}
+        if not confirm:
+            self.log(action, "preview", **preview)
+            return {"sent": False, **preview}
+        response, _ = self._send(action, spec.action, form=payload)
+        location = self._same_origin_path(response.headers.get("Location"))
+        if response.status_code != 302 or location in (None, "<foreign-origin>", "/login"):
+            self.log(action, "failed", status=response.status_code, location=location)
+            raise WriteError(f"workflow/from-template answered HTTP {response.status_code} -> {location}")
+        _, text = self._get_page(page)
+        assigned = f"/product/{product_id}/workflow/" in text and 'id="templatePickerEmptyWorkflow"' not in text
+        fields = sorted({int(i) for i in re.findall(r'class="form-control customField" data-id="(\d+)"', text)})
+        self.log(action, "verified" if assigned else "unverified", custom_field_ids=fields)
+        return {"sent": True, "status": response.status_code, "location": location,
+                "assigned": assigned, "custom_field_ids": fields}
+
     # -- clients -----------------------------------------------------------
     def find_clients(self, name):
         """Exact-name matches from the contact list search: [(id, name), ...]."""
@@ -494,13 +564,14 @@ class WebWriter:
         if type(production_date) is not str or not re.fullmatch(r"\d{2}-\d{2}-\d{4}", production_date):
             raise WriteError("production_date must be DD-MM-YYYY")
         _clean_text(workorder_code, 255, allow_empty=True)
-        _clean_text(comments, 2000, allow_empty=True)
+        _clean_text(comments, 2000, allow_empty=True, multiline=True)
         if type(lines) is not list or not lines:
             raise WriteError("at least one line is required")
         wol = []
         for index, line in enumerate(lines, 1):
             if type(line) is not dict or not {"product", "description", "quantity"} <= set(line) \
-                    or set(line) - {"product", "description", "quantity", "tag", "comments", "wolCode"}:
+                    or set(line) - {"product", "description", "quantity", "tag", "comments", "wolCode",
+                                    "customFields"}:
                 raise WriteError(f"line {index}: invalid keys")
             if type(line["product"]) is not int or line["product"] < 1:
                 raise WriteError(f"line {index}: invalid product id")
@@ -509,10 +580,19 @@ class WebWriter:
             wol.append({"description": _clean_text(line["description"], 2000),
                         "product": line["product"], "quantity": line["quantity"],
                         "tag": line.get("tag"),
-                        "comments": _clean_text(line.get("comments", ""), 2000, allow_empty=True),
-                        "frontId": index, "customFieldsValues": {},
+                        "comments": _clean_text(line.get("comments", ""), 4000, allow_empty=True,
+                                                multiline=True),
+                        "frontId": index,
+                        "customFieldsValues": self._custom_fields(line.get("customFields", {}), index),
                         "wolCode": _clean_text(line.get("wolCode", ""), 255, allow_empty=True),
                         "bomValues": {}})
+        for index, line in enumerate(wol, 1):
+            if line["customFieldsValues"]:
+                known = self.product_custom_field_ids(line["product"])
+                unknown = sorted(set(map(int, line["customFieldsValues"])) - set(known))
+                if unknown:
+                    raise WriteError(f"line {index}: product {line['product']} has no custom fields {unknown}"
+                                     f" (has {known})")
         parser = self.verify_forms(action, [WORKORDER_HEAD, WORKORDER_LINE],
                                    script_markers=WORKORDER_SCRIPT_MARKERS)
         token = parser.csrf_meta
@@ -568,6 +648,13 @@ def main(argv=None):
     client = sub.add_parser("create-client")
     client.add_argument("--name", required=True)
     client.add_argument("--confirm", action="store_true")
+    flow = sub.add_parser("assign-workflow")
+    flow.add_argument("--product-id", type=int, required=True)
+    flow.add_argument("--template-id", type=int, required=True)
+    flow.add_argument("--confirm", action="store_true")
+    spec = sub.add_parser("create-workorder-spec", help="work order from a JSON spec file")
+    spec.add_argument("--file", required=True, help='{"client_id", "date", "code", "comments", "lines": [...]}')
+    spec.add_argument("--confirm", action="store_true")
     order = sub.add_parser("create-workorder", help="one work order with one line")
     order.add_argument("--client-id", type=int, required=True)
     order.add_argument("--date", required=True, help="production date DD-MM-YYYY")
@@ -582,6 +669,13 @@ def main(argv=None):
     try:
         if args.command == "create-product":
             result = writer.create_product(args.name, active=args.active, confirm=args.confirm)
+        elif args.command == "assign-workflow":
+            result = writer.assign_workflow(args.product_id, args.template_id, confirm=args.confirm)
+        elif args.command == "create-workorder-spec":
+            data = json.loads(Path(args.file).read_text(encoding="utf-8"))
+            result = writer.create_workorder(
+                data["client_id"], data["date"], data["lines"], workorder_code=data.get("code", ""),
+                comments=data.get("comments", ""), confirm=args.confirm)
         elif args.command == "create-client":
             result = writer.create_client(args.name, confirm=args.confirm)
         else:
