@@ -1,0 +1,22 @@
+# User unit (runs as ermis; Linger=yes makes it start at boot without login).
+# Install: cp to ~/.config/systemd/user/ && systemctl --user daemon-reload
+#          && systemctl --user enable claude-remote-control.service
+# Only one remote-control may serve a folder: do not start it while the tmux
+# instance (`tmux new -s claude`) is still running in the same directory.
+[Unit]
+Description=Claude Code remote-control (ERMIS)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ermis/projects/epoptia-bridge
+Environment=PATH=/home/ermis/.local/bin:/usr/local/bin:/usr/bin:/bin
+# network-online.target is not visible to the user manager: wait for DNS instead.
+ExecStartPre=/bin/sh -c 'for i in $(seq 60); do getent hosts api.anthropic.com >/dev/null && exit 0; sleep 5; done; exit 1'
+ExecStart=/home/ermis/.local/bin/claude remote-control --name ERMIS --permission-mode auto
+Restart=always
+RestartSec=30
+TimeoutStartSec=360
+
+[Install]
+WantedBy=default.target

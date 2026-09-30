@@ -1,0 +1,2 @@
+# /etc/sudoers.d/ermis-dashboard — mode 0440 root:root. Validate with: visudo -cf <file>
+ermis ALL=(root) NOPASSWD: /usr/bin/systemctl restart ermis-dashboard.service, /usr/bin/systemctl status ermis-dashboard.service
