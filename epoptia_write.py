@@ -118,6 +118,18 @@ PRODUCT_DELETE = FormSpec(
     "/product/create", "productDeleteForm", "POST", "/products/destroy/0",
     (("_method", "hidden", False), ("_token", "hidden", False)))
 
+CLIENT_CREATE = FormSpec(
+    "/client/create", "clientCreateForm", "POST", "/clients/store",
+    (("_token", "hidden", False), ("tag", "radio", False), ("name", "text", True),
+     ("email", "email", False), ("city", "text", False), ("comments", "text", False),
+     ("show_comments", "checkbox", False), ("phone_number", "text", False),
+     ("vat_number", "text", False), ("vat_rate", "number", False)),
+    (("tag", ("Client", "Supplier", "ClientSupplier")),))
+
+CLIENT_DELETE = FormSpec(
+    "/client/create", "clientDeleteForm", "POST", "/clients/destroy/0",
+    (("_method", "hidden", False), ("_token", "hidden", False)))
+
 WORKORDER_HEAD = FormSpec(
     "/workorders/create", "workorderForm", "GET", None,
     (("client", "select", True), ("productionDate", "text", True),
@@ -173,6 +185,8 @@ class _PageParser(HTMLParser):
         self.forms = {}
         self.csrf_meta = None
         self.rows = []
+        self.info_items = []           # JSON records from <div class="delete…Info d-none">
+        self._info = None
         self._form = None
         self._row = None
         self._name_div = False
@@ -198,6 +212,8 @@ class _PageParser(HTMLParser):
             if key == "_method" and kind == "hidden":
                 self._form["method_override"] = a.get("value")
             self._form["fields"].setdefault(key, (kind, "required" in a))
+        elif tag == "div" and re.fullmatch(r"delete\w+Info d-none", a.get("class") or ""):
+            self._info = ""
         elif tag == "tr":
             self._row = {"id": None, "name": None}
         elif self._row is not None:
@@ -210,6 +226,14 @@ class _PageParser(HTMLParser):
     def handle_endtag(self, tag):
         if tag == "form":
             self._form = None
+        elif tag == "div" and self._info is not None:
+            try:
+                record = json.loads(self._info)
+                if isinstance(record, dict) and type(record.get("id")) is int:
+                    self.info_items.append((record["id"], record.get("name")))
+            except ValueError:
+                pass
+            self._info = None
         elif tag == "div" and self._name_div:
             self._name_div = False
         elif tag == "tr" and self._row is not None:
@@ -218,6 +242,8 @@ class _PageParser(HTMLParser):
             self._row = None
 
     def handle_data(self, data):
+        if self._info is not None:
+            self._info += data
         if self._name_div:
             self._row["name"] += data
 
@@ -424,6 +450,40 @@ class WebWriter:
         self.log(action, "verified" if len(created) == 1 else "unverified", matches=created)
         return {"sent": True, "status": response.status_code, "location": location, "matches": created}
 
+    # -- clients -----------------------------------------------------------
+    def find_clients(self, name):
+        """Exact-name matches from the contact list search: [(id, name), ...]."""
+        parser, _ = self._get_page("/client/create?term=" + quote(name))
+        return [item for item in parser.info_items if item[1] == name]
+
+    def create_client(self, name, *, confirm=False):
+        action = "create_client"
+        _clean_text(name, 50)
+        parser = self.verify_forms(action, [CLIENT_CREATE, CLIENT_DELETE])
+        token = parser.forms[CLIENT_CREATE.form_id]["token"]
+        if not token:
+            raise FormChanged("clientCreateForm has no CSRF token")
+        existing = self.find_clients(name)
+        payload = {"_token": token, "tag": "Client", "name": name, "email": "", "city": "",
+                   "comments": "", "phone_number": "", "vat_number": "", "vat_rate": ""}
+        preview = {"method": "POST", "path": CLIENT_CREATE.action,
+                   "content_type": "application/x-www-form-urlencoded",
+                   "payload": _redact(payload), "existing_same_name": existing}
+        if existing:
+            self.log(action, "refused", reason="contact with this name already exists", existing=existing)
+            raise WriteError(f"contact named {name!r} already exists: {existing}")
+        if not confirm:
+            self.log(action, "preview", **preview)
+            return {"sent": False, **preview}
+        response, _ = self._send(action, CLIENT_CREATE.action, form=payload)
+        location = self._same_origin_path(response.headers.get("Location"))
+        if response.status_code != 302 or location in (None, "<foreign-origin>", "/login"):
+            self.log(action, "failed", status=response.status_code, location=location)
+            raise WriteError(f"clients/store answered HTTP {response.status_code} -> {location}")
+        created = self.find_clients(name)
+        self.log(action, "verified" if len(created) == 1 else "unverified", matches=created)
+        return {"sent": True, "status": response.status_code, "location": location, "matches": created}
+
     # -- work orders -------------------------------------------------------
     def create_workorder(self, client_id, production_date, lines, *, workorder_code="",
                          comments="", confirm=False):
@@ -505,10 +565,31 @@ def main(argv=None):
     product.add_argument("--name", required=True)
     product.add_argument("--active", action="store_true", help="default: inactive")
     product.add_argument("--confirm", action="store_true", help="actually send (else preview only)")
+    client = sub.add_parser("create-client")
+    client.add_argument("--name", required=True)
+    client.add_argument("--confirm", action="store_true")
+    order = sub.add_parser("create-workorder", help="one work order with one line")
+    order.add_argument("--client-id", type=int, required=True)
+    order.add_argument("--date", required=True, help="production date DD-MM-YYYY")
+    order.add_argument("--product-id", type=int, required=True)
+    order.add_argument("--description", required=True)
+    order.add_argument("--quantity", type=float, required=True)
+    order.add_argument("--code", default="")
+    order.add_argument("--comments", default="")
+    order.add_argument("--confirm", action="store_true")
     args = parser.parse_args(argv)
     writer = _writer_from_env()
     try:
-        result = writer.create_product(args.name, active=args.active, confirm=args.confirm)
+        if args.command == "create-product":
+            result = writer.create_product(args.name, active=args.active, confirm=args.confirm)
+        elif args.command == "create-client":
+            result = writer.create_client(args.name, confirm=args.confirm)
+        else:
+            quantity = int(args.quantity) if args.quantity.is_integer() else args.quantity
+            result = writer.create_workorder(
+                args.client_id, args.date,
+                [{"product": args.product_id, "description": args.description, "quantity": quantity}],
+                workorder_code=args.code, comments=args.comments, confirm=args.confirm)
     except PartialWorkorder as exc:
         print(f"ΠΡΟΣΟΧΗ: {exc}", file=sys.stderr)
         return 3

@@ -48,6 +48,29 @@ WORKORDER_PAGE = f"""<meta name="csrf-token" content="META456">
 """
 
 
+CLIENT_PAGE = f"""
+<form action="{BASE}/clients/store" method="post" id="clientCreateForm">
+ <input type="hidden" name="_token" value="TOKEN789">
+ <input type="radio" id="newClient" name="tag" value="Client" checked>
+ <input type="radio" id="newSupplier" name="tag" value="Supplier" disabled>
+ <input type="radio" id="newContact" name="tag" value="ClientSupplier" disabled>
+ <input type="text" name="name" id="name" required><input type="email" name="email">
+ <input type="text" name="city"><input type="text" name="comments">
+ <input type="checkbox" name="show_comments" id="showClientComments">
+ <input type="text" name="phone_number"><input type="text" name="vat_number">
+ <input type="number" name="vat_rate">
+</form>
+<form id="clientDeleteForm" action="{BASE}/clients/destroy/0" method="POST">
+ <input type="hidden" name="_method" value="DELETE"><input type="hidden" name="_token" value="TOKEN789">
+</form>
+"""
+
+
+def client_list(*rows):
+    return "".join(f'<div class="deleteClientInfo d-none">{{&quot;id&quot;:{i},&quot;name&quot;:&quot;{n}&quot;}}</div>'
+                   for i, n in rows)
+
+
 class Response:
     def __init__(self, status=200, text="", ctype="text/html", location=None, body=None):
         self.status_code = status
@@ -157,6 +180,30 @@ class WebWriterTest(unittest.TestCase):
         with self.assertRaises(w.WriteError):
             self.writer(session).create_product("ERMIS-TEST", confirm=True)
         self.assertEqual(self.log()[-1]["phase"], "failed")
+
+    def client_session(self, before=(), after=(), posts=()):
+        return FakeSession({"/client/create": [Response(text=CLIENT_PAGE)],
+                            "/client/create?term": [Response(text=client_list(*before)),
+                                                    Response(text=client_list(*after))]}, posts)
+
+    def test_client_preview_then_create(self):
+        session = self.client_session()
+        preview = self.writer(session).create_client("ERMIS-TEST")
+        self.assertFalse(preview["sent"])
+        self.assertEqual(preview["payload"]["tag"], "Client")
+        self.assertEqual(session.sent, [])
+        session = self.client_session(after=[(55, "ERMIS-TEST")],
+                                      posts=[Response(302, location=BASE + "/client/create")])
+        result = self.writer(session).create_client("ERMIS-TEST", confirm=True)
+        self.assertEqual(session.sent[0][0], "/clients/store")
+        self.assertEqual(result["matches"], [(55, "ERMIS-TEST")])
+        self.assertNotIn("TOKEN789", self.log_path.read_text())
+
+    def test_existing_client_refused(self):
+        session = self.client_session(before=[(9, "ERMIS-TEST")])
+        with self.assertRaises(w.WriteError):
+            self.writer(session).create_client("ERMIS-TEST", confirm=True)
+        self.assertEqual(session.sent, [])
 
     def workorder_args(self):
         return dict(client_id=3, production_date="15-10-2026",
