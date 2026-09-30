@@ -31,3 +31,6 @@ __pycache__/
 
 # Epoptia throttle lock, last-request time and halt switch
 state/
+
+# Epoptia write audit log (business data, stays on the server)
+/logs/
