@@ -71,7 +71,7 @@ class FakeSession:
 
     def get(self, url, **kwargs):
         path = url[len(BASE):]
-        key = path.split("?")[0] + ("?term" if "?term=" in path else "")
+        key = path.split("?")[0] + ("?term" if "?term=" in path else "?sortby" if "?sortby=" in path else "")
         return self.pages[key].pop(0)
 
     def post(self, url, **kwargs):
@@ -99,6 +99,7 @@ class WebWriterTest(unittest.TestCase):
         return FakeSession({
             "/product/create": [Response(text=PRODUCT_FORM.replace("{extra}", extra))],
             "/product/create?term": [Response(text=product_list(*rows)) for rows in [()] + list(after)],
+            "/product/create?sortby": [Response(text=product_list((899, "Y")))],
         }, posts)
 
     def test_preview_sends_nothing_and_redacts_token(self):
@@ -127,6 +128,14 @@ class WebWriterTest(unittest.TestCase):
         self.assertEqual([r["phase"] for r in self.log()],
                          ["form_check", "request", "response", "verified"])
         self.assertNotIn("TOKEN123", self.log_path.read_text())
+
+    def test_inactive_product_found_by_id_page(self):
+        session = self.product_session(after=[[]], posts=[Response(302, location=BASE + "/products")])
+        session.pages["/product/create?sortby"] = [Response(text=product_list((1426, "X")))]
+        session.pages["/products/1427"] = [Response(text='<div> / #1427 (ERMIS-TEST)</div>')]
+        result = self.writer(session).create_product("ERMIS-TEST", confirm=True)
+        self.assertEqual(result["matches"], [(1427, "ERMIS-TEST")])
+        self.assertEqual(self.log()[-1]["phase"], "verified")
 
     def test_changed_form_stops_before_any_post(self):
         session = self.product_session(extra='<input type="text" name="code" required>')

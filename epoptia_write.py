@@ -366,6 +366,16 @@ class WebWriter:
         parser, _ = self._get_page("/product/create?term=" + quote(name))
         return [row for row in parser.rows if row[1] == name]
 
+    def newest_product_id(self):
+        parser, _ = self._get_page("/product/create?sortby=id&type=desc")
+        return max((row[0] for row in parser.rows), default=None)
+
+    def product_page_name(self, product_id):
+        """Name from the /products/{id} breadcrumb "#id (name)"; inactive products show here."""
+        parser, text = self._get_page(f"/products/{int(product_id)}")
+        match = re.search(r"#%d \((.*?)\)</div>" % int(product_id), text)
+        return match.group(1) if match else None
+
     def product_delete_info(self, parser):
         form = parser.forms.get(PRODUCT_DELETE.form_id) or {}
         return {"delete_form": not self._check_form(parser, PRODUCT_DELETE),
@@ -395,12 +405,22 @@ class WebWriter:
         if not confirm:
             self.log(action, "preview", **preview)
             return {"sent": False, **preview}
+        newest = self.newest_product_id()
         response, _ = self._send(action, PRODUCT_CREATE.action, form=payload)
         location = self._same_origin_path(response.headers.get("Location"))
         if response.status_code != 302 or location in (None, "<foreign-origin>", "/login"):
             self.log(action, "failed", status=response.status_code, location=location)
             raise WriteError(f"products/store answered HTTP {response.status_code} -> {location}")
         created = self.find_products(name)
+        if not created and newest is not None:
+            # The product list hides inactive products; look at the next ids directly.
+            for candidate in range(newest + 1, newest + 4):
+                try:
+                    if self.product_page_name(candidate) == name:
+                        created = [(candidate, name)]
+                        break
+                except WriteError:
+                    continue
         self.log(action, "verified" if len(created) == 1 else "unverified", matches=created)
         return {"sent": True, "status": response.status_code, "location": location, "matches": created}
 
