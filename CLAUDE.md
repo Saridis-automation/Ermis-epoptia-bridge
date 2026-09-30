@@ -1,6 +1,6 @@
 # ERMIS / Epoptia bridge — project memory
 
-Speak to the user in Greek. Work as a partner: do the technical work yourself (shell, code, tests)
+Speak to the user in Greek, addressing them in the singular (ενικός — "εσύ", not "εσείς"). Work as a partner: do the technical work yourself (shell, code, tests)
 instead of handing the user commands to run. Ask for a one-line "yes" only before irreversible or
 production-affecting actions (see Safety rules).
 

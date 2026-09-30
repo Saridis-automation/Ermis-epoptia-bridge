@@ -44,24 +44,7 @@
       "Bash(/home/ermis/projects/epoptia-bridge/scripts/run_offline_tests.sh*)"
     ],
     "ask": [
-      "Bash(sudo *)",
-      "Bash(rm *)",
-      "Bash(systemctl restart *)",
-      "Bash(systemctl stop *)",
-      "Bash(apparmor_parser *)",
-      "Bash(*bootstrap.sh*)",
-      "Bash(git push*)",
-      "Bash(git reset*)",
-      "Bash(git checkout main*)",
-      "Bash(git switch main*)",
-      "Bash(git -C * push*)",
-      "Bash(git -C * reset*)",
-      "Bash(git -C * checkout main*)",
-      "Bash(git -C * switch main*)",
-      "Bash(*saridis.epoptia.io*)",
-      "Bash(*epoptia_api_write.py send*)",
-      "WebFetch(domain:saridis.epoptia.io)",
-      "Edit(//home/ermis/projects/epoptia-bridge/.claude/**)"
+      "Bash(*epoptia_api_write.py send*)"
     ],
     "deny": [
       "Read(./.env)",
