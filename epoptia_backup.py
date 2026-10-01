@@ -14,7 +14,7 @@ Sources
 
 Storage (outside the repo, default ~/epoptia-backup):
 - epoptia.sqlite  records (current state per kind/id), history (every new or
-  changed version), runs (one row per night).
+  changed version, recorded only before HISTORY_UNTIL), runs (one row per night).
 - raw/YYYY-MM-DD/  gzip copies of workflow pages; kept RAW_KEEP_DAYS days.
 
 Never stored: client "passwd", session cookies, CSRF tokens, credentials.
@@ -29,7 +29,7 @@ import re
 import shutil
 import sqlite3
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -43,6 +43,10 @@ LOCAL_TZ = ZoneInfo("Europe/Athens")
 NIGHT_START, NIGHT_END = 21, 6          # allowed local hours: 21:00-05:59
 MAX_PAGES = 200                          # safety stop per listing
 DROP_FIELDS = {"client": {"passwd"}}
+# Change history is a one-month safety net agreed with the user (2026-10-01).
+# From this local date on, no new history rows are written; the existing ones
+# stay until the user confirms they can be deleted (--purge-history).
+HISTORY_UNTIL = date(2026, 11, 1)
 
 LISTS = (
     # kind, path, info div class
@@ -97,9 +101,10 @@ def extract_records(text, info_class):
 
 
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, *, keep_history=True):
         self.db = sqlite3.connect(path)
         self.db.executescript(SCHEMA)
+        self.keep_history = keep_history
 
     def start_run(self):
         cur = self.db.execute("INSERT INTO runs (started, status) VALUES (?, 'running')", (_now(),))
@@ -129,8 +134,15 @@ class Store:
             self.db.execute("UPDATE records SET last_seen=?, gone_since=NULL WHERE kind=? AND id=?",
                             (seen_at, kind, record["id"]))
             return "same"
-        self.db.execute("INSERT INTO history VALUES (?,?,?,?)", (kind, record["id"], seen_at, data))
+        if self.keep_history:
+            self.db.execute("INSERT INTO history VALUES (?,?,?,?)", (kind, record["id"], seen_at, data))
         return state
+
+    def purge_history(self):
+        count = self.db.execute("DELETE FROM history").rowcount
+        self.db.commit()
+        self.db.execute("VACUUM")
+        return count
 
     def mark_gone(self, kind, seen_ids, seen_at):
         """After a COMPLETE listing: records not seen are marked gone (never deleted)."""
@@ -272,7 +284,12 @@ def main(argv=None):
     parser.add_argument("--dir", default=str(BACKUP_DIR))
     parser.add_argument("--now", action="store_true", help="allow a run outside night hours")
     parser.add_argument("--only", help="comma list of kinds (product,client,...,workorderline,workflow_pages)")
+    parser.add_argument("--purge-history", action="store_true",
+                        help="delete all change history (only after the user confirmed it)")
     args = parser.parse_args(argv)
+    if args.purge_history:
+        print(f"deleted {Store(Path(args.dir) / 'epoptia.sqlite').purge_history()} history rows")
+        return 0
     if not args.now and not night_allowed():
         print("refusing: backups run only at night (21:00-06:00 Europe/Athens); use --now", file=sys.stderr)
         return 2
@@ -281,7 +298,8 @@ def main(argv=None):
     directory = Path(args.dir)
     directory.mkdir(parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
-    store = Store(directory / "epoptia.sqlite")
+    keep_history = datetime.now(LOCAL_TZ).date() < HISTORY_UNTIL
+    store = Store(directory / "epoptia.sqlite", keep_history=keep_history)
     backup = Backup(os.getenv("EPOPTIA_BASE_URL"), os.getenv("EPOPTIA_API_KEY"),
                     os.getenv("EPOPTIA_USERNAME"), os.getenv("EPOPTIA_PASSWORD"),
                     store=store, raw_dir=directory / "raw")
@@ -293,6 +311,7 @@ def main(argv=None):
         store.finish_run(run_id, "failed", backup.requests, backup.summary, f"{type(exc).__name__}: {exc}")
         print(f"backup FAILED after {backup.requests} requests: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+    summary["history"] = "on" if keep_history else "off"
     store.finish_run(run_id, "ok" if not only else "partial", backup.requests, summary)
     print(json.dumps({"run": run_id, "requests": backup.requests, "summary": summary}, ensure_ascii=False))
     return 0

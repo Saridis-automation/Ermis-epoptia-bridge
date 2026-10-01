@@ -102,6 +102,18 @@ class BackupTest(unittest.TestCase):
         self.assertEqual(history, 2)
         self.assertEqual(backup.summary["tag"], {"seen": 1, "new": 0, "changed": 1, "gone": 1})
 
+    def test_history_off_still_updates_records_and_purge(self):
+        path = "/tags?per_page=100&page=1"
+        self.backup({path: Response(info("deleteTagInfo", [{"id": 1, "name": "a"}]))}).copy_list(
+            "tag", "/tags", "deleteTagInfo", "t1")
+        self.store.keep_history = False
+        self.backup({path: Response(info("deleteTagInfo", [{"id": 1, "name": "b"}]))}).copy_list(
+            "tag", "/tags", "deleteTagInfo", "t2")
+        self.assertEqual(self.rows("tag")[1][0]["name"], "b")
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM history").fetchone()[0], 1)
+        self.assertEqual(self.store.purge_history(), 1)
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM history").fetchone()[0], 0)
+
     def test_empty_first_page_is_an_error_not_a_mass_gone(self):
         self.backup({"/tags?per_page=100&page=1": Response(info("deleteTagInfo", [{"id": 1}]))}).copy_list(
             "tag", "/tags", "deleteTagInfo", "t1")
