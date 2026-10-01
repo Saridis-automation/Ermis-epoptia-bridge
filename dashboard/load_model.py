@@ -25,8 +25,8 @@ import unicodedata
 # e.g. ΜΟΝΤΑΖ ΤΖΑΜΙΑ finishes half a showcase per day. PUNCHING is ignored (to be removed).
 PRODUCTS_PER_DAY = {
     "LASER": 5.0, "ΚΟΠΗ ΨΑΛΙΔΙ": 5.0, "ΣΤΡΑΝΤΖΑ": 4.0,
-    "ΜΟΝΤΑΖ 1": 4.0, "ΜΟΝΤΑΖ 2": 2.0, "ΜΟΝΤΑΖ ΤΖΑΜΙΑ": 0.8, "ΨΥΚΤΙΚΑ": 3.0,
-}   # revised by the user 2026-10-01
+    "ΜΟΝΤΑΖ 1": 3.5, "ΜΟΝΤΑΖ 2": 1.8, "ΜΟΝΤΑΖ ΤΖΑΜΙΑ": 0.8, "ΨΥΚΤΙΚΑ": 2.5,
+}   # revised by the user 2026-10-01 (calibrated: ΜΟΝΤΑΖ 1, 2, ΨΥΚΤΙΚΑ)
 # Average size weight of the products that pass each station (history), so that the
 # user's "typical products/day" converts to weighted units. Provisional values from
 # 1,248 recent lines; recompute with `--reference` from the full backup and review.
