@@ -37,10 +37,11 @@ Services (systemd):
    **Backup:** `epoptia_backup.py` copies Epoptia into `~/epoptia-backup/epoptia.sqlite` once per
    night (user timer `ermis-epoptia-backup.timer`, 23:30 Europe/Athens, never during the day).
    Change history only until 2026-11-01, then ask the user before `--purge-history`.
-2. **Dashboard.** Capacity % was relative pending counts (not utilization); unknown capacity was
-   rendered as 100%. Intended: unknown → "—". After that change the page went blank while the
-   backend still served data. Unresolved. True utilization needs standard_time_per_step,
-   remaining_quantity, available_station_time, capacity_horizon.
+2. **Dashboard station load.** The current "%" = pending routing steps ÷ the busiest station.
+   That is NOT what the user asked for. The user's model (products with size weights, capacity in
+   products/day, backward per-station deadlines from delivery dates) is specified in
+   `docs/dashboard_load_model.md`. Waiting on the user for the daily capacities and the working days.
+   Build and show it offline first; the dashboard restart needs the user's sudo.
 3. **Voice Gateway.** Not running (no unit, port 8002 closed); old symptom `upstream_unavailable`.
    The MCP servers it calls are disabled. User wants to discuss its future.
 4. ~~Connector schema (ChatGPT saw 14 of 15 tools)~~ — moot: ChatGPT connectors disabled.
