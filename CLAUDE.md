@@ -10,11 +10,13 @@ Repo: `/home/ermis/projects/epoptia-bridge` (venv: `./venv`). Secrets in `.env` 
 `EPOPTIA_BASE_URL=https://saridis.epoptia.io`, API key in `.env`.
 
 Services (systemd):
-- `ermis-epoptia-mcp` (127.0.0.1:8000, `mcp_server.py`) + `ermis-epoptia-tunnel` — MES reads
-- `ermis-system-mcp` (127.0.0.1:8001, `ermis_system_server.py`, `service_control.py`) + `ermis-system-tunnel` — host admin
-- `ermis-dashboard` (port 8010, `python -m dashboard.server`)
-- a Voice/ERMIS Gateway service (exact unit name unknown — find it)
-Keep the MES / system-admin split.
+- `ermis-dashboard` (port 8010, `python -m dashboard.server`) — reads Epoptia directly (no MCP).
+- user units: `claude-remote-control` (this Claude session), `ermis-epoptia-backup.timer` (nightly).
+- DISABLED 1 Oct 2026 by the user's decision (ChatGPT access no longer used; files kept, re-enable
+  with `sudo systemctl enable --now …`): `ermis-epoptia-mcp` (8000) + `ermis-epoptia-tunnel`,
+  `ermis-system-mcp` (8001) + `ermis-system-tunnel`. Keep the MES / system-admin split if revived.
+- Voice/ERMIS Gateway (`ermis_gateway_server.py`, port 8002) is NOT deployed; it depends on the
+  disabled MCP servers. To be discussed with the user.
 
 ## Confirmed working (historical, re-verify)
 - Runs 24/7 without the developer Mac (since 6 Sep 2026).
@@ -39,10 +41,13 @@ Keep the MES / system-admin split.
    rendered as 100%. Intended: unknown → "—". After that change the page went blank while the
    backend still served data. Unresolved. True utilization needs standard_time_per_step,
    remaining_quantity, available_station_time, capacity_horizon.
-3. **Voice Gateway.** Health OK, but returns `upstream_unavailable` while MCP answers directly →
-   Gateway↔MCP protocol/session issue.
-4. **Connector schema:** server had 15 tools, ChatGPT saw 14 — likely client-side caching.
-5. **Browser/AppArmor installer — PAUSED.** `admin_bootstrap/bootstrap.sh` grew into an
+3. **Voice Gateway.** Not running (no unit, port 8002 closed); old symptom `upstream_unavailable`.
+   The MCP servers it calls are disabled. User wants to discuss its future.
+4. ~~Connector schema (ChatGPT saw 14 of 15 tools)~~ — moot: ChatGPT connectors disabled.
+5. **Browser/AppArmor installer — ABANDONED, leftovers REMOVED 1 Oct 2026** (by the user with sudo:
+   profile `ermis-epoptia-login-chromium` unloaded + deleted, `ermis-epoptia-login.{service,socket}`,
+   `/usr/local/libexec/ermis-epoptia-login-*`, `/opt/ermis`; config backup in
+   `/root/ermis-login-leftovers-2026-10-01.tgz`). History: `admin_bootstrap/bootstrap.sh` grew into an
    over-engineered transactional installer. 24 Sep: recovery OK (10 items archived to
    `/root/ermis-login-recovery-err_ra_7`, TRANSACTION_STATE idle, ATOMIC_PREFLIGHT_OK), then install
    failed with `B_LOGIN_APPARMOR-MANUAL_RECOVERY_BEFORE_KERNEL_BOUNDARY_PROFILE_COMMIT`.
@@ -79,7 +84,8 @@ Keep the MES / system-admin split.
   (`ReadWritePaths=`). Before any change that writes files, check each unit's sandbox
   (`systemctl show <unit> -p ProtectHome -p ProtectSystem -p ReadWritePaths`). The MCP units
   have no sandbox. Restarting an MCP unit also restarts its tunnel (`Requires=`). sudo without
-  password covers only `systemctl restart` of the two MCP and two tunnel units, not the dashboard.
+  password covers only `systemctl restart` of the two (now disabled) MCP and tunnel units — not the
+  dashboard; dashboard restarts need the user.
 - Tests: run `scripts/run_offline_tests.sh` (offline guard, temp throttle state). Never run tests
   directly with the real `state/` dir — a mocked 403 would halt production.
 
