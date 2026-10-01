@@ -1,4 +1,5 @@
 """WebWriter against synthetic pages: form checks, preview gate, logging, partial workorders."""
+import html
 import json
 import tempfile
 import unittest
@@ -283,6 +284,32 @@ class WebWriterTest(unittest.TestCase):
         session = FakeSession({"/products/900": [self.assign_page(900, empty=False, fields=(12,))]})
         with self.assertRaises(w.WriteError):
             self.writer(session).create_workorder(**args)
+
+    def wo_page(self, wol_id=3288, description="Test line"):
+        info = html.escape(json.dumps({"id": wol_id, "workorder_id": 751, "description": description}))
+        return Response(text=f"""<div class="deleteWorkorderlineInfo d-none">{info}</div>
+<form id="workordelineDeleteForm" action="{BASE}/workorderlines/remove/0" method="POST">
+ <input type="hidden" name="_method" value="DELETE"><input type="hidden" name="_token" value="TOKDEL"></form>""")
+
+    def test_delete_line_checks_description_then_deletes(self):
+        session = FakeSession({"/workorders/751": [self.wo_page(description="Other")]})
+        with self.assertRaises(w.WriteError):
+            self.writer(session).delete_workorderline(751, 3288, "Test line", confirm=True)
+        session = FakeSession({"/workorders/751": [self.wo_page(), self.wo_page(), Response(text="")]},
+                              [Response(302, location=BASE + "/workorders/751")])
+        writer = self.writer(session)
+        self.assertFalse(writer.delete_workorderline(751, 3288, "Test line")["sent"])
+        self.assertEqual(session.sent, [])
+        result = writer.delete_workorderline(751, 3288, "Test line", confirm=True)
+        self.assertEqual(session.sent[0][0], "/workorderlines/remove/3288")
+        self.assertEqual(session.sent[0][1]["data"]["_method"], "DELETE")
+        self.assertTrue(result["verified"])
+
+    def test_delete_product_refuses_name_mismatch(self):
+        session = FakeSession({"/products/1428": [Response(text="<div> / #1428 (Something else)</div>")]})
+        with self.assertRaises(w.WriteError):
+            self.writer(session).delete_product(1428, "ERMIS-TEST", confirm=True)
+        self.assertEqual(session.sent, [])
 
     def workorder_args(self):
         return dict(client_id=3, production_date="15-10-2026",

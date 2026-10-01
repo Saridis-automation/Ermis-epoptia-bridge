@@ -135,6 +135,10 @@ CLIENT_DELETE = FormSpec(
     "/client/create", "clientDeleteForm", "POST", "/clients/destroy/0",
     (("_method", "hidden", False), ("_token", "hidden", False)))
 
+WOL_DELETE = FormSpec(
+    "/workorders/{id}", "workordelineDeleteForm", "POST", "/workorderlines/remove/0",
+    (("_method", "hidden", False), ("_token", "hidden", False)))
+
 WORKORDER_HEAD = FormSpec(
     "/workorders/create", "workorderForm", "GET", None,
     (("client", "select", True), ("productionDate", "text", True),
@@ -544,6 +548,69 @@ class WebWriter:
         return {"sent": True, "status": response.status_code, "location": location,
                 "assigned": assigned, "custom_field_ids": fields}
 
+    # -- deletes (test data clean-up) ---------------------------------------
+    def _delete(self, action, spec, page_parser, route, target, *, confirm):
+        """Shared delete: verified form, _method=DELETE, 302 expected; preview unless confirm."""
+        problems = self._check_form(page_parser, spec)
+        form = page_parser.forms.get(spec.form_id) or {}
+        if form.get("method_override") != "DELETE":
+            problems.append("delete form lost _method=DELETE")
+        self.log(action, "form_check", page=spec.page, ok=not problems, problems=problems)
+        if problems:
+            raise FormChanged("; ".join(problems))
+        payload = {"_method": "DELETE", "_token": form["token"]}
+        preview = {"method": "POST", "path": route, "payload": _redact(payload), "target": target}
+        if not confirm:
+            self.log(action, "preview", **preview)
+            return {"sent": False, **preview}
+        response, _ = self._send(action, route, form=payload)
+        location = self._same_origin_path(response.headers.get("Location"))
+        if response.status_code != 302 or location in (None, "<foreign-origin>", "/login"):
+            self.log(action, "failed", status=response.status_code, location=location)
+            raise WriteError(f"{route} answered HTTP {response.status_code} -> {location}")
+        return {"sent": True, "status": response.status_code, "location": location, "target": target}
+
+    def delete_workorderline(self, workorder_id, wol_id, expected_description, *, confirm=False):
+        page = WOL_DELETE.page.format(id=int(workorder_id))
+        parser, text = self._get_page(page)
+        lines = {}
+        for blob in re.findall(r'<div class="deleteWorkorderlineInfo d-none">(.*?)</div>', text, re.S):
+            record = json.loads(html.unescape(blob))
+            lines[record.get("id")] = record
+        line = lines.get(int(wol_id))
+        if line is None or line.get("workorder_id") != int(workorder_id):
+            raise WriteError(f"line {wol_id} is not on work order {workorder_id}")
+        if line.get("description") != expected_description:
+            raise WriteError(f"line {wol_id} is {line.get('description')!r}, not {expected_description!r}")
+        spec = FormSpec(page, WOL_DELETE.form_id, WOL_DELETE.method, WOL_DELETE.action, WOL_DELETE.fields)
+        result = self._delete("delete_workorderline", spec, parser, f"/workorderlines/remove/{int(wol_id)}",
+                              {"workorder": int(workorder_id), "line": int(wol_id),
+                               "description": expected_description}, confirm=confirm)
+        if result["sent"]:
+            _, after = self._get_page(page)
+            result["verified"] = f'&quot;id&quot;:{int(wol_id)},' not in after and f'"id":{int(wol_id)},' not in after
+            self.log("delete_workorderline", "verified" if result["verified"] else "unverified", line=int(wol_id))
+        return result
+
+    def delete_product(self, product_id, expected_name, *, confirm=False):
+        current = self.product_page_name(product_id)
+        if current != expected_name:
+            raise WriteError(f"product {product_id} is {current!r}, not {expected_name!r}")
+        parser, _ = self._get_page(PRODUCT_DELETE.page)
+        return self._delete("delete_product", PRODUCT_DELETE, parser, f"/products/destroy/{int(product_id)}",
+                            {"product": int(product_id), "name": expected_name}, confirm=confirm)
+
+    def delete_client(self, client_id, expected_name, *, confirm=False):
+        if (int(client_id), expected_name) not in self.find_clients(expected_name):
+            raise WriteError(f"client {client_id} named {expected_name!r} not found")
+        parser, _ = self._get_page(CLIENT_DELETE.page)
+        result = self._delete("delete_client", CLIENT_DELETE, parser, f"/clients/destroy/{int(client_id)}",
+                              {"client": int(client_id), "name": expected_name}, confirm=confirm)
+        if result["sent"]:
+            result["verified"] = (int(client_id), expected_name) not in self.find_clients(expected_name)
+            self.log("delete_client", "verified" if result["verified"] else "unverified", client=int(client_id))
+        return result
+
     # -- clients -----------------------------------------------------------
     def find_clients(self, name):
         """Exact-name matches from the contact list search: [(id, name), ...]."""
@@ -734,6 +801,12 @@ def main(argv=None):
     flow.add_argument("--product-id", type=int, required=True)
     flow.add_argument("--template-id", type=int, required=True)
     flow.add_argument("--confirm", action="store_true")
+    delete = sub.add_parser("delete", help="delete one test record (name must match)")
+    delete.add_argument("--kind", choices=("workorderline", "product", "client"), required=True)
+    delete.add_argument("--id", type=int, required=True)
+    delete.add_argument("--expect", required=True, help="exact current name/description")
+    delete.add_argument("--workorder", type=int, help="work order id (for --kind workorderline)")
+    delete.add_argument("--confirm", action="store_true")
     order_plan = sub.add_parser("create-order", help="whole order from a JSON plan (see run_order_plan)")
     order_plan.add_argument("--plan", required=True)
     order_plan.add_argument("--confirm", action="store_true")
@@ -756,6 +829,15 @@ def main(argv=None):
             result = writer.create_product(args.name, active=args.active, confirm=args.confirm)
         elif args.command == "assign-workflow":
             result = writer.assign_workflow(args.product_id, args.template_id, confirm=args.confirm)
+        elif args.command == "delete":
+            if args.kind == "workorderline":
+                if not args.workorder:
+                    raise WriteError("--workorder is required for a work order line")
+                result = writer.delete_workorderline(args.workorder, args.id, args.expect, confirm=args.confirm)
+            elif args.kind == "product":
+                result = writer.delete_product(args.id, args.expect, confirm=args.confirm)
+            else:
+                result = writer.delete_client(args.id, args.expect, confirm=args.confirm)
         elif args.command == "create-order":
             plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
             result = run_order_plan(writer, plan, confirm=args.confirm)
