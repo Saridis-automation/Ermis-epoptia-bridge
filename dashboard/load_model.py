@@ -308,8 +308,10 @@ def station_load(jobs, today):
             available = max(1.0, job["due_index"][station] - now)      # overdue -> due today
             ratio = cumulative / (capacity * available)
             if worst is None or ratio > worst["ratio"]:
+                # needed/fits in the user's unit (typical products of this station)
+                ref = REFERENCE_WEIGHT.get(station, 1.0)
                 worst = dict(ratio=ratio, by=index_to_date(max(job["due_index"][station], now + 1)).isoformat(),
-                             needed=round(cumulative, 1), fits=round(capacity * available, 1),
+                             needed=round(cumulative / ref, 1), fits=round(capacity * available / ref, 1),
                              workdays=round(available, 1))
         total = sum(j["work"][station] for j in mine)
         report[station] = dict(
