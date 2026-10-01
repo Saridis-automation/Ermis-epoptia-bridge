@@ -593,9 +593,13 @@ class WebWriter:
         return result
 
     def delete_product(self, product_id, expected_name, *, confirm=False):
-        current = self.product_page_name(product_id)
+        _, text = self._get_page(f"/products/{int(product_id)}")
+        match = re.search(r"#%d \((.*?)\)</div>" % int(product_id), text)
+        current = match.group(1) if match else None
         if current != expected_name:
             raise WriteError(f"product {product_id} is {current!r}, not {expected_name!r}")
+        if "No workorderlines with this product" not in text:
+            raise WriteError(f"product {product_id} is still used by work order lines; delete those first")
         parser, _ = self._get_page(PRODUCT_DELETE.page)
         return self._delete("delete_product", PRODUCT_DELETE, parser, f"/products/destroy/{int(product_id)}",
                             {"product": int(product_id), "name": expected_name}, confirm=confirm)
@@ -607,6 +611,7 @@ class WebWriter:
         result = self._delete("delete_client", CLIENT_DELETE, parser, f"/clients/destroy/{int(client_id)}",
                               {"client": int(client_id), "name": expected_name}, confirm=confirm)
         if result["sent"]:
+            # Epoptia answers 302 even when it silently refuses (e.g. a client that had orders).
             result["verified"] = (int(client_id), expected_name) not in self.find_clients(expected_name)
             self.log("delete_client", "verified" if result["verified"] else "unverified", client=int(client_id))
         return result

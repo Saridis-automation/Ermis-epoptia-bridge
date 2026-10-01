@@ -305,6 +305,12 @@ class WebWriterTest(unittest.TestCase):
         self.assertEqual(session.sent[0][1]["data"]["_method"], "DELETE")
         self.assertTrue(result["verified"])
 
+    def test_delete_product_refuses_product_in_use(self):
+        session = FakeSession({"/products/1428": [Response(text="<div> / #1428 (ERMIS-TEST)</div> Σε παραγωγή <tr>3288</tr>")]})
+        with self.assertRaises(w.WriteError):
+            self.writer(session).delete_product(1428, "ERMIS-TEST", confirm=True)
+        self.assertEqual(session.sent, [])
+
     def test_delete_product_refuses_name_mismatch(self):
         session = FakeSession({"/products/1428": [Response(text="<div> / #1428 (Something else)</div>")]})
         with self.assertRaises(w.WriteError):
