@@ -112,6 +112,10 @@ class WebWriterTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.log_path = Path(directory.name) / "logs" / "epoptia_writes.log"
+        self.db_path = Path(directory.name) / "backup.sqlite"
+        original = w.backup_similar_products
+        w.backup_similar_products = lambda name: original(name, self.db_path)
+        self.addCleanup(setattr, w, "backup_similar_products", original)
 
     def writer(self, session):
         return w.WebWriter(BASE, "u", "p", session=session, login=lambda *a: True,
@@ -161,6 +165,30 @@ class WebWriterTest(unittest.TestCase):
         result = self.writer(session).create_product("ERMIS-TEST", confirm=True)
         self.assertEqual(result["matches"], [(1427, "ERMIS-TEST")])
         self.assertEqual(self.log()[-1]["phase"], "verified")
+
+    def test_lookalike_name_in_backup_is_refused(self):
+        import sqlite3
+        with sqlite3.connect(self.db_path) as db:
+            db.execute("CREATE TABLE records (kind, id, data, gone_since)")
+            db.execute("INSERT INTO records VALUES ('product', 1371, ?, NULL)",
+                       (json.dumps({"name": "Ψυγείο βιτρίνα ΒΧΜ 83 Ειδικό"}),))
+        session = self.product_session()
+        with self.assertRaises(w.WriteError):
+            self.writer(session).create_product("Ψυγείο βιτρίνα BXM83 Ειδικό", confirm=True)
+        self.assertEqual(session.sent, [])
+
+    def test_order_plan_preview_sends_nothing(self):
+        session = FakeSession({"/client/create": [Response(text=CLIENT_PAGE)],
+                               "/client/create?term": [Response(text=client_list())],
+                               "/product/create": [Response(text=PRODUCT_FORM.replace("{extra}", ""))],
+                               "/product/create?term": [Response(text=product_list())]})
+        plan = {"client": {"create": "NEW CLIENT"}, "date": "09-11-2026",
+                "new_products": {"bx": {"name": "Νέο προϊόν", "workflow_id": 1477}},
+                "lines": [{"product": "new:bx", "description": "Νέο προϊόν", "quantity": 1},
+                          {"product": 900, "description": "Υπάρχον", "quantity": 2}]}
+        report = w.run_order_plan(self.writer(session), plan)
+        self.assertEqual(session.sent, [])
+        self.assertEqual(report["steps"][-1]["workorder"]["lines"][0]["product"], "<new product bx>")
 
     def test_changed_form_stops_before_any_post(self):
         session = self.product_session(extra='<input type="text" name="code" required>')

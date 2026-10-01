@@ -275,6 +275,28 @@ def _clean_text(value, limit, *, allow_empty=False, multiline=False):
     return value
 
 
+_GREEK_LOOKALIKES = str.maketrans("ΑΒΕΖΗΙΚΜΝΟΡΤΥΧ", "ABEZHIKMNOPTYX")
+
+
+def name_key(name):
+    """Compare product names ignoring case, accents, Greek/Latin look-alikes and spacing."""
+    import unicodedata
+    text = "".join(c for c in unicodedata.normalize("NFD", name.upper()) if unicodedata.category(c) != "Mn")
+    return re.sub(r"[\s\-.]+", "", text.translate(_GREEK_LOOKALIKES))
+
+
+def backup_similar_products(name, db_path=Path.home() / "epoptia-backup" / "epoptia.sqlite"):
+    """Products in the nightly backup whose normalized name equals this one (no Epoptia request)."""
+    import sqlite3
+    if not Path(db_path).exists():
+        return None
+    key = name_key(name)
+    with sqlite3.connect(db_path) as db:
+        rows = db.execute("SELECT id, json_extract(data, '$.name') FROM records "
+                          "WHERE kind='product' AND gone_since IS NULL").fetchall()
+    return [(i, n) for i, n in rows if n and name_key(n) == key]
+
+
 class WebWriter:
     """One authenticated Epoptia web session used only for reviewed writes."""
 
@@ -423,6 +445,8 @@ class WebWriter:
         if not token:
             raise FormChanged("productCreateForm has no CSRF token")
         existing = self.find_products(name)
+        similar = backup_similar_products(name)
+        existing = existing + [row for row in (similar or []) if row[0] not in {e[0] for e in existing}]
         payload = {"_token": token, "product_type": "Product", "name": name}
         if active:
             payload["is_active"] = "on"
@@ -630,6 +654,64 @@ class WebWriter:
         return {"sent": True, "workorder_id": workorder_id, "workorder_lines": mapping}
 
 
+def run_order_plan(writer, plan, *, confirm=False):
+    """Whole order: client -> new products (+workflow) -> one work order with all lines.
+
+    plan = {"client": {"id": int} | {"create": name}, "date": "DD-MM-YYYY", "code": "",
+            "comments": "", "new_products": {key: {"name", "workflow_id", "active"}},
+            "lines": [{"product": id | "new:key", "description", "quantity", "comments",
+                       "customFields"}]}
+    Preview (confirm=False) sends nothing. Any failure stops before the next step.
+    """
+    report = {"steps": []}
+    client = plan["client"]
+    if "id" in client:
+        client_id = client["id"]
+    else:
+        result = writer.create_client(client["create"], confirm=confirm)
+        report["steps"].append({"client": result})
+        if confirm:
+            if len(result.get("matches", [])) != 1:
+                raise WriteError("new client not verified; stopping before products")
+            client_id = result["matches"][0][0]
+        else:
+            client_id = None
+    product_ids = {}
+    for key, spec in plan.get("new_products", {}).items():
+        result = writer.create_product(spec["name"], active=spec.get("active", True), confirm=confirm)
+        report["steps"].append({"product": key, "create": result})
+        if not confirm:
+            report["steps"].append({"product": key, "workflow": {"template_id": spec["workflow_id"],
+                                                                 "sent": False}})
+            continue
+        if len(result.get("matches", [])) != 1:
+            raise WriteError(f"new product {key} not verified; stopping before the work order")
+        product_ids[key] = result["matches"][0][0]
+        flow = writer.assign_workflow(product_ids[key], spec["workflow_id"], confirm=True)
+        report["steps"].append({"product": key, "workflow": flow})
+        if not flow.get("assigned"):
+            raise WriteError(f"workflow not verified on product {product_ids[key]}; stopping")
+    lines = []
+    for line in plan["lines"]:
+        line = dict(line)
+        if isinstance(line["product"], str) and line["product"].startswith("new:"):
+            key = line["product"][4:]
+            if not confirm:
+                line["product"] = f"<new product {key}>"
+                lines.append(line)
+                continue
+            line["product"] = product_ids[key]
+        lines.append(line)
+    if not confirm:
+        report["steps"].append({"workorder": {"client_id": client_id or "<new client>", "date": plan["date"],
+                                              "code": plan.get("code", ""), "lines": lines, "sent": False}})
+        return report
+    result = writer.create_workorder(client_id, plan["date"], lines, workorder_code=plan.get("code", ""),
+                                     comments=plan.get("comments", ""), confirm=True)
+    report["steps"].append({"workorder": result})
+    return report
+
+
 def _writer_from_env():
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -652,6 +734,9 @@ def main(argv=None):
     flow.add_argument("--product-id", type=int, required=True)
     flow.add_argument("--template-id", type=int, required=True)
     flow.add_argument("--confirm", action="store_true")
+    order_plan = sub.add_parser("create-order", help="whole order from a JSON plan (see run_order_plan)")
+    order_plan.add_argument("--plan", required=True)
+    order_plan.add_argument("--confirm", action="store_true")
     spec = sub.add_parser("create-workorder-spec", help="work order from a JSON spec file")
     spec.add_argument("--file", required=True, help='{"client_id", "date", "code", "comments", "lines": [...]}')
     spec.add_argument("--confirm", action="store_true")
@@ -671,6 +756,9 @@ def main(argv=None):
             result = writer.create_product(args.name, active=args.active, confirm=args.confirm)
         elif args.command == "assign-workflow":
             result = writer.assign_workflow(args.product_id, args.template_id, confirm=args.confirm)
+        elif args.command == "create-order":
+            plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
+            result = run_order_plan(writer, plan, confirm=args.confirm)
         elif args.command == "create-workorder-spec":
             data = json.loads(Path(args.file).read_text(encoding="utf-8"))
             result = writer.create_workorder(
