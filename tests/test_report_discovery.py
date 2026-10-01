@@ -80,9 +80,13 @@ class DiscoveryTests(unittest.TestCase):
                              return_value=progress.copy()), \
                 patch.object(discovery, 'discover_workorder_reports', wraps=discovery.discover_workorder_reports) as discover, \
                 patch('actual_completion.parse_actual_completion',
-                      return_value={'date': None, 'reason': 'label_missing'}) as completion:
+                      return_value={'date': None, 'reason': 'label_missing'}) as completion, \
+                patch('calendar_target_dates.refresh_calendar', return_value={}) as calendar, \
+                patch('calendar_target_dates.order_targets', return_value={}):
             result = epoptia_read.inspect_workorder_progress(
                 BASE, {}, 722, username='synthetic', password='synthetic')
+        # The calendar step (delivery targets) is covered by test_calendar_target_dates.
+        calendar.assert_called_once_with(BASE, session, authenticated=True)
         login.assert_called_once_with(session, BASE, 'synthetic', 'synthetic')
         completion.assert_called_once_with(html, 722)
         self.assertIs(discover.call_args.kwargs['html_get'], epoptia_read._web_html_get)

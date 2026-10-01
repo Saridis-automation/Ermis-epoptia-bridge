@@ -42,6 +42,17 @@ def session_for(pages):
     return session
 
 
+class CalendarIsolated:
+    """These tests cover deadlines/progress; the calendar read is tested in test_calendar_target_dates."""
+
+    def setUp(self):
+        from calendar_target_dates import result
+        patcher = patch('calendar_target_dates.refresh_calendar',
+                        side_effect=lambda *a, **k: result('calendar_unavailable'))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
 class ParentDeadlineContractTests(unittest.TestCase):
     """Parent dates come only from complete productionData bucket scans."""
 
@@ -90,7 +101,7 @@ class ParentDeadlineContractTests(unittest.TestCase):
         self.assertEqual(report['dates'], {})
 
 
-class RuntimeDeadlineTests(unittest.IsolatedAsyncioTestCase):
+class RuntimeDeadlineTests(CalendarIsolated, unittest.IsolatedAsyncioTestCase):
     async def overview(self, pages):
         session = session_for(pages)
         capacity = session.post.return_value.json.return_value
@@ -172,7 +183,7 @@ class RuntimeDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(orders['overdue_work'])
 
 
-class DeadlineEnvelopeTests(unittest.TestCase):
+class DeadlineEnvelopeTests(CalendarIsolated, unittest.TestCase):
     def test_default_overview_reuses_capacity_targets_and_preserves_progress(self):
         session = session_for([fixture()])
         rows = session.post.return_value.json.return_value['productionData']['1999-01-01']
@@ -279,7 +290,7 @@ class DeadlineEnvelopeTests(unittest.TestCase):
         self.assertEqual(report['dates'], {})
 
 
-class AuthenticatedMergeTests(unittest.IsolatedAsyncioTestCase):
+class AuthenticatedMergeTests(CalendarIsolated, unittest.IsolatedAsyncioTestCase):
     async def test_default_api_transport_and_sanitized_diagnostic(self):
         from dashboard.deadline_diagnostic import diagnose_deadlines
         session = session_for([])
@@ -325,7 +336,8 @@ class AuthenticatedMergeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.sources['production_overview']['state'], 'available')
         self.assertIsNone(provider.sources['production_overview']['failure_reason'])
 
-    async def test_stable_top_three_and_terminal_exclusion(self):
+    async def test_stable_top_five_and_terminal_exclusion(self):
+        # The dashboard shows up to five urgent orders (dashboard/orders.py, adapter.py).
         census = OrderCensus()
         census.consume([wol(key, key, 100 if key == 705 else 74.4) for key in (705, 704, 703, 702, 701)])
         payload = dict(numberOfPages=1, productionData={
@@ -333,5 +345,5 @@ class AuthenticatedMergeTests(unittest.IsolatedAsyncioTestCase):
             '2026-09-01': [wol(705, 705)]})
         census.consume_deadlines(read_parent_deadlines('https://synthetic.invalid', session_for([payload])))
         result = census.result(True, date(2026, 9, 19))
-        self.assertEqual([row['id'] for row in result['urgent_orders']], [701, 702, 703])
+        self.assertEqual([row['id'] for row in result['urgent_orders']], [701, 702, 703, 704])
         self.assertEqual(result['overdue_work'], 4)

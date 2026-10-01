@@ -62,7 +62,7 @@ class ReaderInitializationTests(unittest.TestCase):
         tools = {tool.name for tool in asyncio.run(self.server.list_tools())}
         self.assertEqual(tools, {'get_wol_status', 'get_wol_details', 'list_wols',
                                 'production_overview', 'due_wols', 'workstation_wip',
-                                'inspect_workorder_progress'})
+                                'inspect_workorder_progress', 'calendar_target_dates'})
         with patch.object(self.reader, '_web_login', return_value=True):
             self.assertTrue(self.call('get_wol_status', wol_id=3168)['found'])
             self.assertTrue(self.call('get_wol_details', wol_id=3168)['ok'])

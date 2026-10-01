@@ -652,7 +652,8 @@ class StructureTest(unittest.TestCase):
         self.assertEqual(names, {'ermis_git_status', 'ermis_git_commit', 'ermis_service_status',
                                 'ermis_service_control', 'ermis_health', 'ermis_codex_start', 'ermis_codex_status',
                                 'ermis_codex_logs', 'ermis_codex_inspect', 'ermis_codex_wait',
-                                'ermis_technical_report_read'})
+                                'ermis_technical_report_read', 'ermis_gateway_execute',
+                                'ermis_epoptia_browser_inspect'})
 
     def test_wrong_user_rejected_before_filesystem_access(self):
         with patch.object(jobs.os, 'getuid', return_value=-1):

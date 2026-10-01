@@ -69,8 +69,13 @@ class GatewayTest(unittest.TestCase):
             self.assertFalse(self.request(**body)["ok"])
         self.invoke.assert_not_called()
 
-    def test_login_supervisor_status_and_confirmed_restart(self):
-        service = 'ermis-epoptia-login.service'
+    def test_paused_login_service_rejected_and_confirmed_restart(self):
+        # The server-side login browser workstream is paused (CLAUDE.md): its unit is
+        # not installed and must not be controllable through the gateway.
+        for action in ('service_status', 'restart_service'):
+            self.assertFalse(self.request(action=action, arguments={'service': 'ermis-epoptia-login.service'})['ok'])
+        self.invoke.assert_not_awaited()
+        service = 'ermis-dashboard.service'
         self.assertTrue(self.request(action='service_status', arguments={'service': service})['ok'])
         self.invoke.assert_awaited_once_with('Ermis_System', 'ermis_service_status', {'service': service})
         self.invoke.reset_mock()
