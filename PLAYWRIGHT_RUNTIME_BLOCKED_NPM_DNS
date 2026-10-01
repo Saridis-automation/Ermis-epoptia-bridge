@@ -1,3 +1,0 @@
-Blocked: npm package resolution failed with EAI_AGAIN for registry.npmjs.org.
-Playwright module, package-lock.json, and project-local browser are missing.
-Smoke test was not run.
