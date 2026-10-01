@@ -65,6 +65,10 @@ class SizeAndWeightTests(unittest.TestCase):
         self.assertEqual(m.station_weight("ΜΟΝΤΑΖ 2", self_service), 2.0)
         self.assertEqual(m.station_weight("ΜΟΝΤΑΖ 2", bench_drawers), 2.0)
         self.assertEqual(m.station_weight("ΜΟΝΤΑΖ 1", showcase), 2.0)
+        self.assertEqual(m.station_weight("ΜΟΝΤΑΖ 2", showcase), 1.0)
+        heated = line(8, "2026-11-01", [], "Θερμή βιτρίνα BTH72 Ειδικό")
+        self.assertEqual(m.station_weight("ΨΥΚΤΙΚΑ", heated), 0.3)
+        self.assertEqual(m.station_weight("ΨΥΚΤΙΚΑ", line(9, "2026-11-01", [], "Θερμοθάλαμος Ειδικός")), 0.3)
 
 
 class LoadTests(unittest.TestCase):

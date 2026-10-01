@@ -32,7 +32,7 @@ PRODUCTS_PER_DAY = {
 # 1,248 recent lines; recompute with `--reference` from the full backup and review.
 REFERENCE_WEIGHT = {
     "LASER": 1.24, "ΚΟΠΗ ΨΑΛΙΔΙ": 0.91, "ΣΤΡΑΝΤΖΑ": 0.95,
-    "ΜΟΝΤΑΖ 1": 1.3, "ΜΟΝΤΑΖ 2": 1.39, "ΜΟΝΤΑΖ ΤΖΑΜΙΑ": 1.0, "ΨΥΚΤΙΚΑ": 1.26,
+    "ΜΟΝΤΑΖ 1": 1.3, "ΜΟΝΤΑΖ 2": 1.26, "ΜΟΝΤΑΖ ΤΖΑΜΙΑ": 1.0, "ΨΥΚΤΙΚΑ": 1.12,
 }
 CAPACITY_PER_DAY = {s: PRODUCTS_PER_DAY[s] * REFERENCE_WEIGHT[s] for s in PRODUCTS_PER_DAY}
 WEIGHTS = {"small": 0.5, "normal": 1.0, "large": 2.0}
@@ -152,6 +152,7 @@ def features(line):
         bench=bool(re.search(r"παγκ", name)) and bool(re.search(r"ψυγ|συντηρ|καταψ", name)),
         drawers="συρταρ" in text,
         freezer=bool(re.search(r"καταψ", name)),
+        heated=bool(re.search(r"θερμ", name)),
         self_service=bool(re.search(r"self[\s-]*service", name)),
         cold_cuts=bool(re.search(r"αλλαντικ", name)),
         doors=max(doors) if doors else None,
@@ -164,10 +165,11 @@ def station_weight(station, line):
     ΜΟΝΤΑΖ 1: size classes 0.5/1/2.  ΜΟΝΤΑΖ ΤΖΑΜΙΑ: 1 for all.
     ΚΟΠΗ ΨΑΛΙΔΙ: small 0.2, rest 1.  ΣΤΡΑΝΤΖΑ: small 0.5, rest 1.
     LASER: showcase 1.5, bench/cabinet with drawers 2, rest 1 (no extra for "Ειδικό").
-    ΨΥΚΤΙΚΑ: bench/cabinet 1, refrigerated showcase 1.5, freezer +0.5.
+    ΨΥΚΤΙΚΑ: heated items (θερμή βιτρίνα, θερμοθάλαμος) 0.3; bench/cabinet 1,
+      refrigerated showcase 1.5, freezer +0.5.
     ΜΟΝΤΑΖ 2: bench with doors 1, 1-door cabinet 1, 2+-door cabinet 1.5, glass
       cabinet 1.5, self service 2, cold-cuts showcase 2, bench with drawers 2;
-      other showcases 1.5 PROVISIONAL (not specified by the user yet), rest 1.
+      other showcases and the rest 1.
     """
     f = features(line)
     if station == "ΜΟΝΤΑΖ 1":
@@ -183,6 +185,8 @@ def station_weight(station, line):
             return 2.0
         return 1.5 if f["showcase"] else 1.0
     if station == "ΨΥΚΤΙΚΑ":
+        if f["heated"]:
+            return 0.3
         base = 1.5 if f["showcase"] else 1.0
         return base + (0.5 if f["freezer"] else 0.0)
     if station == "ΜΟΝΤΑΖ 2":
@@ -190,9 +194,7 @@ def station_weight(station, line):
             return 2.0
         if f["glass_cabinet"] or (f["cabinet"] and (f["doors"] or 1) >= 2):
             return 1.5
-        if f["bench"] or f["cabinet"]:
-            return 1.0
-        return 1.5 if f["showcase"] else 1.0
+        return 1.0
     return 1.0
 
 
