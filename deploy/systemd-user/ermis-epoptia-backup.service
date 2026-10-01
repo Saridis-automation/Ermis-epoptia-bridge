@@ -1,0 +1,13 @@
+# Nightly read-only Epoptia backup (epoptia_backup.py) -> ~/epoptia-backup.
+# Install: cp ermis-epoptia-backup.{service,timer} ~/.config/systemd/user/
+#          && systemctl --user daemon-reload
+#          && systemctl --user enable --now ermis-epoptia-backup.timer
+[Unit]
+Description=ERMIS nightly Epoptia backup (read-only)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ermis/projects/epoptia-bridge
+ExecStart=/home/ermis/projects/epoptia-bridge/venv/bin/python epoptia_backup.py
+Nice=10
+TimeoutStartSec=3h

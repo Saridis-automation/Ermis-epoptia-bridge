@@ -1,0 +1,11 @@
+# Once per night only. Persistent=false: a missed run is NOT made up during the day.
+[Unit]
+Description=ERMIS nightly Epoptia backup at 23:30 Athens time
+
+[Timer]
+OnCalendar=*-*-* 23:30:00 Europe/Athens
+Persistent=false
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target
