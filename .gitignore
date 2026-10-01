@@ -34,3 +34,6 @@ state/
 
 # Epoptia write audit log (business data, stays on the server)
 /logs/
+
+# Customer order PDFs (business data, stays on the server)
+/inbox/
