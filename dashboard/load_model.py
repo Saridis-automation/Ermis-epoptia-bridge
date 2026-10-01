@@ -21,10 +21,20 @@ import json
 import re
 import unicodedata
 
-CAPACITY_PER_DAY = {
+# Products per working day AS THEY USUALLY ARRIVE at that station (user, 2026-10-01):
+# e.g. ΜΟΝΤΑΖ ΤΖΑΜΙΑ finishes half a showcase per day. PUNCHING is ignored (to be removed).
+PRODUCTS_PER_DAY = {
     "LASER": 4.0, "ΚΟΠΗ ΨΑΛΙΔΙ": 4.0, "ΣΤΡΑΝΤΖΑ": 4.0,
     "ΜΟΝΤΑΖ 1": 3.0, "ΜΟΝΤΑΖ 2": 1.5, "ΜΟΝΤΑΖ ΤΖΑΜΙΑ": 0.5, "ΨΥΚΤΙΚΑ": 2.0,
 }
+# Average size weight of the products that pass each station (history), so that the
+# user's "typical products/day" converts to weighted units. Provisional values from
+# 1,248 recent lines; recompute with `--reference` from the full backup and review.
+REFERENCE_WEIGHT = {
+    "LASER": 1.64, "ΚΟΠΗ ΨΑΛΙΔΙ": 1.29, "ΣΤΡΑΝΤΖΑ": 1.35,
+    "ΜΟΝΤΑΖ 1": 1.32, "ΜΟΝΤΑΖ 2": 1.72, "ΜΟΝΤΑΖ ΤΖΑΜΙΑ": 1.99, "ΨΥΚΤΙΚΑ": 1.76,
+}
+CAPACITY_PER_DAY = {s: PRODUCTS_PER_DAY[s] * REFERENCE_WEIGHT[s] for s in PRODUCTS_PER_DAY}
 WEIGHTS = {"small": 0.5, "normal": 1.0, "large": 2.0}
 ACTIVE_STATUSES = ("production", "standby")
 LARGE_LENGTH_CM = 250
@@ -150,6 +160,21 @@ def open_stations(line):
 
 
 # -- model ------------------------------------------------------------------------
+def reference_weights(lines):
+    """Average size weight of every product that passes each station (any status)."""
+    sums = defaultdict(list)
+    for line in lines:
+        size = WEIGHTS[size_class(line)[0]]
+        for step in line.get("erp_routing") or []:
+            station = station_name(step.get("workstationName"))
+            if station in PRODUCTS_PER_DAY:
+                sums[(station, line.get("workorderline_id"))] = size
+    out = defaultdict(list)
+    for (station, _), weight in sums.items():
+        out[station].append(weight)
+    return {s: round(sum(v) / len(v), 2) for s, v in out.items()}
+
+
 def build_jobs(lines):
     jobs, skipped = [], defaultdict(int)
     for line in lines:
@@ -255,9 +280,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Station load report from the nightly backup.")
     parser.add_argument("--db", default=str(Path.home() / "epoptia-backup" / "epoptia.sqlite"))
     parser.add_argument("--sizes", action="store_true", help="list every active product with its size class")
+    parser.add_argument("--reference", action="store_true", help="print average size weight per station")
     args = parser.parse_args(argv)
     lines = _lines_from_backup(args.db)
     today = datetime.now(ZoneInfo("Europe/Athens")).date()
+    if args.reference:
+        print(json.dumps(reference_weights(lines), ensure_ascii=False))
+        return 0
     if args.sizes:
         jobs, _ = build_jobs(lines)
         for job in sorted(jobs, key=lambda j: (j["size"], j["description"] or "")):
