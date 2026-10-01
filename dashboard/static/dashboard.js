@@ -108,7 +108,8 @@ function render(data) {
   sourceNotes(data);
   const today = data.today ?? {};
   // Exact commercial-flow exclusion is unverified; diagnostics stay in the API.
-  el("daily-kpi").textContent = "—";
+  el("daily-kpi").textContent = Number.isSafeInteger(data.products_to_produce) && data.products_to_produce >= 0 ? String(data.products_to_produce) : "—";
+  el("daily-kpi").title = "Προϊόντα σε ενεργές εντολές με ανοιχτή εργασία σε σταθμό παραγωγής (ημιτελή και μη ξεκινημένα, χωρίς εμπόριο)";
   const fields = data.field_status ?? {};
   const freshness = key => ({cached: "Προηγούμενη επιτυχής ανάγνωση",
     partial: "Μερική κάλυψη: εξαιρούνται ανεπιβεβαίωτες προθεσμίες", stale: "Παλαιά δεδομένα", loading: "Φόρτωση δεδομένων",
@@ -159,7 +160,6 @@ function render(data) {
     const count = Number.isSafeInteger(station.pending_steps) && station.pending_steps >= 0 ? station.pending_steps : '—';
     const pending = node('div', null, 'pending');
     pending.append(node('span', 'Εκκρεμείς εργασίες '), node('strong', count));
-    if (detail) pending.append(node('small', detail, 'load-detail'));
     card.append(heading, stationIcon(station.name), load, pending);
     return card;
   }));

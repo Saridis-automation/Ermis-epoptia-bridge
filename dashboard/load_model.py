@@ -37,6 +37,8 @@ REFERENCE_WEIGHT = {
 CAPACITY_PER_DAY = {s: PRODUCTS_PER_DAY[s] * REFERENCE_WEIGHT[s] for s in PRODUCTS_PER_DAY}
 WEIGHTS = {"small": 0.5, "normal": 1.0, "large": 2.0}
 ACTIVE_STATUSES = ("production", "standby")
+# Production stations for counting products (PUNCHING included: it is still real work).
+PRODUCTION_STATIONS = set(PRODUCTS_PER_DAY) | {"PUNCHING"}
 LARGE_LENGTH_CM = 250
 
 
@@ -235,6 +237,24 @@ def reference_weights(lines):
     for (station, _), weight in sums.items():
         out[station].append(weight)
     return {s: round(sum(v) / len(v), 2) for s, v in out.items()}
+
+
+def products_to_produce(lines):
+    """Units still to produce: active lines with any open step at a production station.
+
+    Covers both started and not-started products; commercial lines (only the order
+    intake/receipt steps) and fully finished-but-not-archived lines do not count.
+    Delivery date is not required. Quantity counts (2 pieces = 2).
+    """
+    total = 0
+    for line in lines:
+        if not isinstance(line, dict) or line.get("production_status") not in ACTIVE_STATUSES:
+            continue
+        if any(station_name(s.get("workstationName")) in PRODUCTION_STATIONS and s.get("status") != "completed"
+               for s in line.get("erp_routing") or [] if isinstance(s, dict)):
+            quantity = line.get("quantity")
+            total += quantity if type(quantity) is int and quantity > 0 else 1
+    return total
 
 
 def build_jobs(lines):

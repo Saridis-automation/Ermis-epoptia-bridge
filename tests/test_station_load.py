@@ -53,6 +53,13 @@ class StationLoadTests(unittest.TestCase):
         data['station_coverage']['available'] = False
         self.assertIsNone(map_snapshot(data, NOW)['overall_load_percent'])
 
+    def test_products_to_produce_served_only_when_reliable(self):
+        data = snapshot((8, 0), (80, 0))
+        data['products_to_produce'] = 42
+        self.assertEqual(map_snapshot(data, NOW)['products_to_produce'], 42)
+        data['station_coverage']['available'] = False
+        self.assertIsNone(map_snapshot(data, NOW)['products_to_produce'])
+
     def test_no_open_work_is_zero_and_missing_model_is_unknown(self):
         self.assertEqual(percentages(snapshot((0, 8), (None, 60))), [0, 60])
         self.assertEqual(percentages(snapshot((8,), (None,))), [None])

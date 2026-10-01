@@ -141,6 +141,8 @@ def map_snapshot(snapshot, now):
                 freshness_seconds=freshness_seconds(now),
                 overall_progress_percent=None,
                 overall_load_percent=overall_load,
+                products_to_produce=(snapshot.get("products_to_produce")
+                                     if reliable_stations and type(snapshot.get("products_to_produce")) is int else None),
                 native_mean_order_progress_percent=number(active.get("native_active_production_progress_percent"), percent=True) if complete else None,
                 capacity_missing_inputs=["standard_time_per_step", "remaining_quantity", "available_station_time", "capacity_horizon"],
                 calendar_target_dates=snapshot.get("calendar_target_dates"),

@@ -99,7 +99,9 @@ def collect_stations(rows, complete):
             waiting_scope='all_not_started_or_waiting_routing_steps_including_future',
             status_counts=dict(item['statuses'])))
     attach_load_model(result, list(seen.values()), valid)
+    from dashboard.load_model import products_to_produce
     return dict(station_version=1, complete=valid, workstations=result,
+        products_to_produce=products_to_produce(list(seen.values())) if valid else None,
         diagnostics=dict(diagnostics), coverage=dict(rows_read=len(rows),
             distinct_wols=len(seen), terminal_filtered=True,
             status_path='erp_routing.status', station_path='erp_routing.workstationName',

@@ -90,6 +90,14 @@ class LoadTests(unittest.TestCase):
         m.backward_schedule(jobs)
         self.assertLess(jobs[0]["due"]["LASER"], jobs[0]["due"]["ΜΟΝΤΑΖ ΤΖΑΜΙΑ"])
 
+    def test_products_to_produce_counts_started_and_unstarted_not_trade(self):
+        lines = [line(1, "2026-11-30", [("ΜΟΝΤΑΖ 1", True), ("ΜΟΝΤΑΖ 1", False)]),        # half done
+                 line(2, None, [("LASER", False)], qty=2),                              # not started, no date
+                 line(3, "2026-11-30", [("ΜΟΝΤΑΖ 1", True)]),                            # finished, not archived
+                 line(4, "2026-11-30", [("ΕΙΣΑΓΩΓΗ ΠΑΡΑΓΓΕΛΙΑΣ", False)]),                # trade
+                 line(5, "2026-11-30", [("ΜΟΝΤΑΖ 1", False)], status="archive")]
+        self.assertEqual(m.products_to_produce(lines), 3)
+
     def test_archived_and_trade_lines_ignored(self):
         lines = [line(1, "2026-11-30", [("ΜΟΝΤΑΖ 1", False)], status="archive"),
                  line(2, "2026-11-30", [("ΕΙΣΑΓΩΓΗ ΠΑΡΑΓΓΕΛΙΑΣ", False)])]

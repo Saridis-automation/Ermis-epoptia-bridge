@@ -373,6 +373,7 @@ class LocalEpoptiaProvider:
         stations = section('workstation_wip', ('workstations',))
         if stations is not None:
             snapshot['workstations'] = stations['workstations']
+            snapshot['products_to_produce'] = stations.get('products_to_produce')
         completed = section('completed_today', ('completed_today',))
         snapshot['today']['completed_today'] = completed
         if self.completed_today is None:
