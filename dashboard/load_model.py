@@ -31,8 +31,8 @@ PRODUCTS_PER_DAY = {
 # user's "typical products/day" converts to weighted units. Provisional values from
 # 1,248 recent lines; recompute with `--reference` from the full backup and review.
 REFERENCE_WEIGHT = {
-    "LASER": 1.0, "ΚΟΠΗ ΨΑΛΙΔΙ": 0.95, "ΣΤΡΑΝΤΖΑ": 1.34,
-    "ΜΟΝΤΑΖ 1": 1.32, "ΜΟΝΤΑΖ 2": 1.72, "ΜΟΝΤΑΖ ΤΖΑΜΙΑ": 1.0, "ΨΥΚΤΙΚΑ": 1.0,
+    "LASER": 1.24, "ΚΟΠΗ ΨΑΛΙΔΙ": 0.91, "ΣΤΡΑΝΤΖΑ": 0.95,
+    "ΜΟΝΤΑΖ 1": 1.3, "ΜΟΝΤΑΖ 2": 1.39, "ΜΟΝΤΑΖ ΤΖΑΜΙΑ": 1.0, "ΨΥΚΤΙΚΑ": 1.26,
 }
 CAPACITY_PER_DAY = {s: PRODUCTS_PER_DAY[s] * REFERENCE_WEIGHT[s] for s in PRODUCTS_PER_DAY}
 WEIGHTS = {"small": 0.5, "normal": 1.0, "large": 2.0}
@@ -131,7 +131,7 @@ def size_class(line):
         return "large", "θάλαμος ψυγείο"
     if re.search(r"παγκος|ερμαρι", name) and drawers:
         return "large", "πάγκος/ερμάριο με συρτάρια"
-    if re.search(r"πλατη|ραφι|πορτα|plexi|μπρατσ|μπαρα", name):
+    if re.search(r"πλατη|ραφι|καπακ|πορτα\b|plexi|μπρατσ|μπαρα", name):
         return "small", "πλάτη/ράφι/πόρτα"
     if length is not None and length > LARGE_LENGTH_CM:
         return "large", f"μήκος {length:g} cm > 2,5 μ."
@@ -139,18 +139,60 @@ def size_class(line):
 
 
 # -- routing ----------------------------------------------------------------------
-def station_weight(station, size):
-    """How much one product of this size costs at this station (user rules 2026-10-01).
+def features(line):
+    """Keyword features from description/product name + comments (normalized, no accents)."""
+    name = _norm(f"{line.get('description', '')} {(line.get('product') or {}).get('name', '')}")
+    text = f"{name} {_norm(line.get('comments'))}"
+    doors = [int(n) for n in re.findall(r"(\d+)\s*(?:ανοιγομεν\w*\s+|συρομεν\w*\s+)?πορτ", text)]
+    return dict(
+        small=bool(re.search(r"πλατη|ραφι|καπακ|πορτα\b|plexi|μπρατσ|μπαρα", name)),
+        showcase=bool(re.search(r"βιτριν", name)),
+        cabinet=bool(re.search(r"θαλαμ", name)) and not re.search(r"θερμοθαλαμ", name),
+        glass_cabinet=bool(re.search(r"θαλαμ", name)) and bool(re.search(r"glass|βιτριν|γυαλ|κρυσταλ", name)),
+        bench=bool(re.search(r"παγκ", name)) and bool(re.search(r"ψυγ|συντηρ|καταψ", name)),
+        drawers="συρταρ" in text,
+        freezer=bool(re.search(r"καταψ", name)),
+        self_service=bool(re.search(r"self[\s-]*service", name)),
+        cold_cuts=bool(re.search(r"αλλαντικ", name)),
+        doors=max(doors) if doors else None,
+    )
 
-    Size matters only where the user said so: ΜΟΝΤΑΖ 1 uses all three classes,
-    ΚΟΠΗ ΨΑΛΙΔΙ only small (0.5) vs the rest (1), ΜΟΝΤΑΖ ΤΖΑΜΙΑ is the same for every size.
-    PROVISIONAL until the user gives rules: ΣΤΡΑΝΤΖΑ, ΜΟΝΤΑΖ 2 (three classes),
-    LASER and ΨΥΚΤΙΚΑ (1 for all).
+
+def station_weight(station, line):
+    """How much one product costs at this station (user rules, 2026-10-01).
+
+    ΜΟΝΤΑΖ 1: size classes 0.5/1/2.  ΜΟΝΤΑΖ ΤΖΑΜΙΑ: 1 for all.
+    ΚΟΠΗ ΨΑΛΙΔΙ: small 0.2, rest 1.  ΣΤΡΑΝΤΖΑ: small 0.5, rest 1.
+    LASER: showcase 1.5, bench/cabinet with drawers 2, rest 1 (no extra for "Ειδικό").
+    ΨΥΚΤΙΚΑ: bench/cabinet 1, refrigerated showcase 1.5, freezer +0.5.
+    ΜΟΝΤΑΖ 2: bench with doors 1, 1-door cabinet 1, 2+-door cabinet 1.5, glass
+      cabinet 1.5, self service 2, cold-cuts showcase 2, bench with drawers 2;
+      other showcases 1.5 PROVISIONAL (not specified by the user yet), rest 1.
     """
-    if station in ("ΜΟΝΤΑΖ 1", "ΣΤΡΑΝΤΖΑ", "ΜΟΝΤΑΖ 2"):
-        return WEIGHTS[size]
+    f = features(line)
+    if station == "ΜΟΝΤΑΖ 1":
+        return WEIGHTS[size_class(line)[0]]
+    if station == "ΜΟΝΤΑΖ ΤΖΑΜΙΑ":
+        return 1.0
     if station == "ΚΟΠΗ ΨΑΛΙΔΙ":
-        return 0.5 if size == "small" else 1.0
+        return 0.2 if f["small"] else 1.0
+    if station == "ΣΤΡΑΝΤΖΑ":
+        return 0.5 if f["small"] else 1.0
+    if station == "LASER":
+        if f["drawers"] and (f["bench"] or "ερμαρι" in _norm(line.get("description"))):
+            return 2.0
+        return 1.5 if f["showcase"] else 1.0
+    if station == "ΨΥΚΤΙΚΑ":
+        base = 1.5 if f["showcase"] else 1.0
+        return base + (0.5 if f["freezer"] else 0.0)
+    if station == "ΜΟΝΤΑΖ 2":
+        if f["self_service"] or f["cold_cuts"] or (f["bench"] and f["drawers"]):
+            return 2.0
+        if f["glass_cabinet"] or (f["cabinet"] and (f["doors"] or 1) >= 2):
+            return 1.5
+        if f["bench"] or f["cabinet"]:
+            return 1.0
+        return 1.5 if f["showcase"] else 1.0
     return 1.0
 
 
@@ -183,11 +225,10 @@ def reference_weights(lines):
     """Average station weight of every product that passes each station (any status)."""
     sums = defaultdict(list)
     for line in lines:
-        size = size_class(line)[0]
         for step in line.get("erp_routing") or []:
             station = station_name(step.get("workstationName"))
             if station in PRODUCTS_PER_DAY:
-                sums[(station, line.get("workorderline_id"))] = station_weight(station, size)
+                sums[(station, line.get("workorderline_id"))] = station_weight(station, line)
     out = defaultdict(list)
     for (station, _), weight in sums.items():
         out[station].append(weight)
@@ -210,7 +251,7 @@ def build_jobs(lines):
             continue
         size, reason = size_class(line)
         quantity = line.get("quantity") or 1
-        work = {s: station_weight(s, size) * quantity * remaining for s, (_, remaining) in stations.items()}
+        work = {s: station_weight(s, line) * quantity * remaining for s, (_, remaining) in stations.items()}
         jobs.append(dict(wol=line["workorderline_id"], description=line.get("description"),
                          client=(line.get("client") or {}).get("name"), delivery=delivery,
                          size=size, size_reason=reason, work=work,

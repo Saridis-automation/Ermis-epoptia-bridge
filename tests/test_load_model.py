@@ -41,10 +41,30 @@ class SizeAndWeightTests(unittest.TestCase):
         self.assertEqual(m.size_class(bench)[0], "large")
 
     def test_station_specific_weights(self):
-        self.assertEqual(m.station_weight("ΜΟΝΤΑΖ ΤΖΑΜΙΑ", "large"), 1.0)
-        self.assertEqual(m.station_weight("ΚΟΠΗ ΨΑΛΙΔΙ", "large"), 1.0)
-        self.assertEqual(m.station_weight("ΚΟΠΗ ΨΑΛΙΔΙ", "small"), 0.5)
-        self.assertEqual(m.station_weight("ΜΟΝΤΑΖ 1", "large"), 2.0)
+        shelf = line(1, "2026-11-01", [], "Επιτοίχιο ράφι ΡΤ121", "120x30 cm")
+        showcase = line(2, "2026-11-01", [], "Ψυγείο βιτρίνα συντήρησης BXM72")
+        bench = line(3, "2026-11-01", [], "Ψυγείο πάγκος συντήρησης PSM74")
+        bench_drawers = dict(bench, comments="1 διπλή συρταριέρα")
+        freezer_bench = line(4, "2026-11-01", [], "Ψυγείο πάγκος κατάψυξης PK62")
+        cabinet2 = dict(line(5, "2026-11-01", [], "Ψυγείο θάλαμος συντήρησης"),
+                        comments="2 ανοιγόμενες πόρτες βαρέως τύπου")
+        glass = line(6, "2026-11-01", [], "Ψυγείο θάλαμος συντήρησης S72G GLASS")
+        self_service = line(7, "2026-11-01", [], "Ψυγείο SELF SERVICE SS150M70")
+        self.assertEqual(m.station_weight("ΜΟΝΤΑΖ ΤΖΑΜΙΑ", showcase), 1.0)
+        self.assertEqual(m.station_weight("ΚΟΠΗ ΨΑΛΙΔΙ", shelf), 0.2)
+        self.assertEqual(m.station_weight("ΚΟΠΗ ΨΑΛΙΔΙ", showcase), 1.0)
+        self.assertEqual(m.station_weight("ΣΤΡΑΝΤΖΑ", shelf), 0.5)
+        self.assertEqual(m.station_weight("LASER", showcase), 1.5)
+        self.assertEqual(m.station_weight("LASER", bench_drawers), 2.0)
+        self.assertEqual(m.station_weight("LASER", bench), 1.0)
+        self.assertEqual(m.station_weight("ΨΥΚΤΙΚΑ", showcase), 1.5)
+        self.assertEqual(m.station_weight("ΨΥΚΤΙΚΑ", freezer_bench), 1.5)
+        self.assertEqual(m.station_weight("ΜΟΝΤΑΖ 2", bench), 1.0)
+        self.assertEqual(m.station_weight("ΜΟΝΤΑΖ 2", cabinet2), 1.5)
+        self.assertEqual(m.station_weight("ΜΟΝΤΑΖ 2", glass), 1.5)
+        self.assertEqual(m.station_weight("ΜΟΝΤΑΖ 2", self_service), 2.0)
+        self.assertEqual(m.station_weight("ΜΟΝΤΑΖ 2", bench_drawers), 2.0)
+        self.assertEqual(m.station_weight("ΜΟΝΤΑΖ 1", showcase), 2.0)
 
 
 class LoadTests(unittest.TestCase):
