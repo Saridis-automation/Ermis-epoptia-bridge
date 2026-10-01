@@ -24,15 +24,15 @@ import unicodedata
 # Products per working day AS THEY USUALLY ARRIVE at that station (user, 2026-10-01):
 # e.g. ΜΟΝΤΑΖ ΤΖΑΜΙΑ finishes half a showcase per day. PUNCHING is ignored (to be removed).
 PRODUCTS_PER_DAY = {
-    "LASER": 4.0, "ΚΟΠΗ ΨΑΛΙΔΙ": 4.0, "ΣΤΡΑΝΤΖΑ": 4.0,
-    "ΜΟΝΤΑΖ 1": 3.0, "ΜΟΝΤΑΖ 2": 1.5, "ΜΟΝΤΑΖ ΤΖΑΜΙΑ": 0.5, "ΨΥΚΤΙΚΑ": 2.0,
-}
+    "LASER": 5.0, "ΚΟΠΗ ΨΑΛΙΔΙ": 5.0, "ΣΤΡΑΝΤΖΑ": 4.0,
+    "ΜΟΝΤΑΖ 1": 4.0, "ΜΟΝΤΑΖ 2": 2.0, "ΜΟΝΤΑΖ ΤΖΑΜΙΑ": 0.8, "ΨΥΚΤΙΚΑ": 3.0,
+}   # revised by the user 2026-10-01
 # Average size weight of the products that pass each station (history), so that the
 # user's "typical products/day" converts to weighted units. Provisional values from
 # 1,248 recent lines; recompute with `--reference` from the full backup and review.
 REFERENCE_WEIGHT = {
-    "LASER": 1.64, "ΚΟΠΗ ΨΑΛΙΔΙ": 1.29, "ΣΤΡΑΝΤΖΑ": 1.35,
-    "ΜΟΝΤΑΖ 1": 1.32, "ΜΟΝΤΑΖ 2": 1.72, "ΜΟΝΤΑΖ ΤΖΑΜΙΑ": 1.99, "ΨΥΚΤΙΚΑ": 1.76,
+    "LASER": 1.0, "ΚΟΠΗ ΨΑΛΙΔΙ": 0.95, "ΣΤΡΑΝΤΖΑ": 1.34,
+    "ΜΟΝΤΑΖ 1": 1.32, "ΜΟΝΤΑΖ 2": 1.72, "ΜΟΝΤΑΖ ΤΖΑΜΙΑ": 1.0, "ΨΥΚΤΙΚΑ": 1.0,
 }
 CAPACITY_PER_DAY = {s: PRODUCTS_PER_DAY[s] * REFERENCE_WEIGHT[s] for s in PRODUCTS_PER_DAY}
 WEIGHTS = {"small": 0.5, "normal": 1.0, "large": 2.0}
@@ -139,8 +139,23 @@ def size_class(line):
 
 
 # -- routing ----------------------------------------------------------------------
+def station_weight(station, size):
+    """How much one product of this size costs at this station (user rules 2026-10-01).
+
+    Size matters only where the user said so: ΜΟΝΤΑΖ 1 uses all three classes,
+    ΚΟΠΗ ΨΑΛΙΔΙ only small (0.5) vs the rest (1), ΜΟΝΤΑΖ ΤΖΑΜΙΑ is the same for every size.
+    PROVISIONAL until the user gives rules: ΣΤΡΑΝΤΖΑ, ΜΟΝΤΑΖ 2 (three classes),
+    LASER and ΨΥΚΤΙΚΑ (1 for all).
+    """
+    if station in ("ΜΟΝΤΑΖ 1", "ΣΤΡΑΝΤΖΑ", "ΜΟΝΤΑΖ 2"):
+        return WEIGHTS[size]
+    if station == "ΚΟΠΗ ΨΑΛΙΔΙ":
+        return 0.5 if size == "small" else 1.0
+    return 1.0
+
+
 def open_stations(line):
-    """{station: depth of its LAST open step} for tracked stations, in routing order."""
+    """{station: (depth of its LAST open step, open steps / all steps there)} in routing order."""
     steps = {s["elementId"]: s for s in line.get("erp_routing") or [] if "elementId" in s}
     depth = {}
 
@@ -151,24 +166,28 @@ def open_stations(line):
         depth[element] = 1 + max((walk(p, seen + (element,)) for p in prev), default=0)
         return depth[element]
 
-    result = {}
+    depths, total, still_open = {}, defaultdict(int), defaultdict(int)
     for element, step in steps.items():
         station = station_name(step.get("workstationName"))
-        if station in CAPACITY_PER_DAY and step.get("status") != "completed":
-            result[station] = max(result.get(station, 0), walk(element))
-    return result
+        if station not in CAPACITY_PER_DAY:
+            continue
+        total[station] += 1
+        if step.get("status") != "completed":
+            still_open[station] += 1
+            depths[station] = max(depths.get(station, 0), walk(element))
+    return {s: (depths[s], still_open[s] / total[s]) for s in depths}
 
 
 # -- model ------------------------------------------------------------------------
 def reference_weights(lines):
-    """Average size weight of every product that passes each station (any status)."""
+    """Average station weight of every product that passes each station (any status)."""
     sums = defaultdict(list)
     for line in lines:
-        size = WEIGHTS[size_class(line)[0]]
+        size = size_class(line)[0]
         for step in line.get("erp_routing") or []:
             station = station_name(step.get("workstationName"))
             if station in PRODUCTS_PER_DAY:
-                sums[(station, line.get("workorderline_id"))] = size
+                sums[(station, line.get("workorderline_id"))] = station_weight(station, size)
     out = defaultdict(list)
     for (station, _), weight in sums.items():
         out[station].append(weight)
@@ -191,10 +210,12 @@ def build_jobs(lines):
             continue
         size, reason = size_class(line)
         quantity = line.get("quantity") or 1
+        work = {s: station_weight(s, size) * quantity * remaining for s, (_, remaining) in stations.items()}
         jobs.append(dict(wol=line["workorderline_id"], description=line.get("description"),
                          client=(line.get("client") or {}).get("name"), delivery=delivery,
-                         size=size, size_reason=reason, weight=WEIGHTS[size] * quantity,
-                         stations=stations))
+                         size=size, size_reason=reason, work=work,
+                         stations={s: depth for s, (depth, _) in stations.items()},
+                         remaining={s: round(r, 2) for s, (_, r) in stations.items()}))
     return jobs, dict(skipped)
 
 
@@ -225,7 +246,7 @@ def backward_schedule(jobs):
         free = float("inf")
         for job in sorted(todo, key=lambda j: j["due_index"][station], reverse=True):
             finish = min(job["due_index"][station], free)
-            free = finish - job["weight"] / capacity
+            free = finish - job["work"][station] / capacity
             starts[(job["wol"], station)] = free
     for job in jobs:
         job["due"] = {s: index_to_date(i) for s, i in job["due_index"].items()}
@@ -240,14 +261,14 @@ def station_load(jobs, today):
                       key=lambda j: j["due_index"][station])
         worst, cumulative = None, 0.0
         for job in mine:
-            cumulative += job["weight"]
+            cumulative += job["work"][station]
             available = max(1.0, job["due_index"][station] - now)      # overdue -> due today
             ratio = cumulative / (capacity * available)
             if worst is None or ratio > worst["ratio"]:
                 worst = dict(ratio=ratio, by=index_to_date(max(job["due_index"][station], now + 1)).isoformat(),
                              needed=round(cumulative, 1), fits=round(capacity * available, 1),
                              workdays=round(available, 1))
-        total = sum(j["weight"] for j in mine)
+        total = sum(j["work"][station] for j in mine)
         report[station] = dict(
             load_percent=round(worst["ratio"] * 100) if worst else 0,
             products=len(mine), weighted=round(total, 1), capacity_per_day=capacity,
