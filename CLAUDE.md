@@ -23,14 +23,18 @@ Keep the MES / system-admin split.
   WOL progress = line level). production_overview can take ~67 s; occasional timeouts ≠ IP block.
 
 ## Open workstreams (separate — do not conflate)
-1. **Epoptia writes (TOP PRIORITY for the user).** Goal: create products, create/modify orders,
-   change descriptions, routings/workflows, workstations. Epoptia's official API (v3.0.3,
-   https://epoptia.tawk.help/article/api-version-303) supports: create/update WO & WOL, delete
-   un-launched WO/WOL, archive WOLs, add clients, add products, remote workstation control
-   (start/pause/cancel/complete), GET workflow templates. Not documented: editing workflows,
-   workstations, existing product descriptions → discover via the Epoptia web UI network calls
-   (done by Claude in the browser on the user's Mac, user logs in once). Prefer official API;
-   UI-internal endpoints are unofficial and may change.
+1. **Epoptia writes — WORKING (since 1 Oct 2026).** The documented API commands
+   (`products`, `clients`, `workorders`, …) answer 400 "command not found"; writes go through the
+   web UI endpoints with a web session. Tool: `epoptia_write.py` (`WebWriter`, CLI; preview by
+   default, `--confirm` sends; re-reads each form and compares with `docs/epoptia_form_map.md`;
+   name-checked deletes). Whole order from a PDF: `create-order --plan inbox/<x>.plan.json`
+   (client → new products + workflow → one WO with all lines). PDFs live in `inbox/` (gitignored).
+   Endpoint/field map and conventions: `docs/epoptia_form_map.md`. Next: an app where the
+   secretary drops the PDF and approves the table.
+   Terminology: SARIDIS "κωδικός προϊόντος" = Epoptia work-order-LINE id (e.g. 2380).
+   **Backup:** `epoptia_backup.py` copies Epoptia into `~/epoptia-backup/epoptia.sqlite` once per
+   night (user timer `ermis-epoptia-backup.timer`, 23:30 Europe/Athens, never during the day).
+   Change history only until 2026-11-01, then ask the user before `--purge-history`.
 2. **Dashboard.** Capacity % was relative pending counts (not utilization); unknown capacity was
    rendered as 100%. Intended: unknown → "—". After that change the page went blank while the
    backend still served data. Unresolved. True utilization needs standard_time_per_step,
