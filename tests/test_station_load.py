@@ -42,6 +42,17 @@ class StationLoadTests(unittest.TestCase):
         self.assertEqual([s['pending_steps'] for s in map_snapshot(data, NOW)['workstations']],
                          [26, 35, 145, 50, 19, 69, 98])
 
+    def test_overall_is_load_weighted_by_days_of_work(self):
+        data = snapshot((10, 10, 10), (114, 40, 60))
+        for row, days in zip(data['workstations'], (1.0, 3.0, 0.0)):
+            row['load_model']['days_of_work'] = days
+        self.assertEqual(map_snapshot(data, NOW)['overall_load_percent'], round((114 * 1 + 40 * 3) / 4))
+        data['workstations'][2]['load_model'] = None          # unknown station -> unknown overall
+        self.assertIsNone(map_snapshot(data, NOW)['overall_load_percent'])
+        data = snapshot((8, 0), (80, 0))
+        data['station_coverage']['available'] = False
+        self.assertIsNone(map_snapshot(data, NOW)['overall_load_percent'])
+
     def test_no_open_work_is_zero_and_missing_model_is_unknown(self):
         self.assertEqual(percentages(snapshot((0, 8), (None, 60))), [0, 60])
         self.assertEqual(percentages(snapshot((8,), (None,))), [None])

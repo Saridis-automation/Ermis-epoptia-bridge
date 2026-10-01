@@ -9,8 +9,6 @@ function loadDetail(model) {
   const tight = model && model.tightest;
   return tight ? `ως ${dayMonth(tight.by)}: χρειάζονται ${decimal(tight.needed)} · χωράνε ${decimal(tight.fits)}` : "";
 }
-// UI load is the inverse of the native active-order mean; unknown stays unknown.
-const productionLoad = progress => typeof progress === "number" && Number.isFinite(progress) ? Math.max(0, Math.min(100, 100 - progress)) : null;
 // Presentation only: preserve the verified calendar date without timezone conversion.
 function deadlineLabel(value) {
   if (typeof value !== "string") return "Μη επαληθευμένη";
@@ -118,12 +116,13 @@ function render(data) {
     completion_history_unverified: "Δεν έχει επαληθευτεί ιστορικό ολοκλήρωσης"}[fields[key]] ?? "");
   el("stations").title = freshness("workstations");
   el("orders").title = `${freshness("urgent_orders")} Χωρίς επαληθευμένη προθεσμία: ${data.canonical_orders?.undated_unfinished_orders ?? "—"}`;
-  const load = productionLoad(data.native_mean_order_progress_percent);
-  el("overall").textContent = percent(load);
-  el("overall").title = `${freshness("active_production")} Κάλυψη εγγενούς προόδου: ${percent(data.native_progress_coverage_percent)}`;
-  el("production-load").setAttribute("aria-label", `ΦΟΡΤΟΣ ΠΑΡΑΓΩΓΗΣ: ${load == null ? "Μη διαθέσιμο" : percent(load)}. 0% χαμηλός φόρτος, 100% υψηλός φόρτος.`);
+  // Overall load = station loads weighted by days of work ahead (may exceed 100%).
+  const load = typeof data.overall_load_percent === "number" && Number.isFinite(data.overall_load_percent) && data.overall_load_percent >= 0 ? data.overall_load_percent : null;
+  el("overall").textContent = loadPercent(load);
+  el("overall").title = `${freshness("workstations")} Μέσος φόρτος σταθμών, σταθμισμένος με τις μέρες δουλειάς του καθενός`;
+  el("production-load").setAttribute("aria-label", `ΦΟΡΤΟΣ ΠΑΡΑΓΩΓΗΣ: ${load == null ? "Μη διαθέσιμο" : loadPercent(load)}. 0% χαμηλός φόρτος, 100% υψηλός φόρτος.`);
   el("progress-needle").setAttribute("visibility", load == null ? "hidden" : "visible");
-  el("progress-needle").setAttribute("transform", `rotate(${load == null ? 0 : load * 1.8} 160 142)`);
+  el("progress-needle").setAttribute("transform", `rotate(${load == null ? 0 : Math.min(100, load) * 1.8} 160 142)`);
   el("stations").replaceChildren(...stations.map(station => {
     const card = node("article", null, "station");
     const load = node("div", null, "load");

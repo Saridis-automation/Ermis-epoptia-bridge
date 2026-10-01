@@ -117,6 +117,13 @@ def map_snapshot(snapshot, now):
             row['load_percent'] = model['load_percent']
         else:
             row['load_percent'] = 0 if row['pending_steps'] == 0 else None
+    # Overall factory load: station loads weighted by the days of work ahead of each
+    # station (user choice 2026-10-01); unknown if any station load is unknown.
+    overall_load = None
+    if reliable_stations and stations and all(type(r['load_percent']) is int for r in stations):
+        days = [((r.get('load_model') or {}).get('days_of_work') or 0.0) for r in stations]
+        total = sum(days)
+        overall_load = round(sum(r['load_percent'] * d for r, d in zip(stations, days)) / total) if total else 0
     completion = snapshot.get('completed_today') or {}
     tracker = completion.get('tracker') or {}
     # Keep the count contract compact: gateway consumers validate these exact
@@ -133,6 +140,7 @@ def map_snapshot(snapshot, now):
                 data_status=snapshot.get("data_status") or ("loading" if snapshot.get("loading") else "offline" if snapshot.get("offline") else "stale" if age > freshness_seconds(now) else "partial" if snapshot.get("partial") else "live"),
                 freshness_seconds=freshness_seconds(now),
                 overall_progress_percent=None,
+                overall_load_percent=overall_load,
                 native_mean_order_progress_percent=number(active.get("native_active_production_progress_percent"), percent=True) if complete else None,
                 capacity_missing_inputs=["standard_time_per_step", "remaining_quantity", "available_station_time", "capacity_horizon"],
                 calendar_target_dates=snapshot.get("calendar_target_dates"),
