@@ -3,7 +3,6 @@
 from datetime import datetime, timezone
 import math
 from dashboard.station_activity import STATION_CAPACITY_TARGETS, station_name, star_state
-from dashboard.station_load import load_percent
 from dashboard.schedule import freshness_seconds
 from zoneinfo import ZoneInfo
 ATHENS = ZoneInfo("Europe/Athens")
@@ -55,6 +54,7 @@ def map_snapshot(snapshot, now):
                              wip_steps=number(row.get("wip_steps")),
                              priority=None,
                              **{key: number(row.get(key)) for key in ("running_steps", "paused_steps", "waiting_steps", "unknown_steps", "distinct_wols")},
+                             load_model=row.get("load_model") if isinstance(row.get("load_model"), dict) else None,
                              **{key: row.get(key) for key in ("units", "capacity_missing_inputs", "executable_queue_steps", "queue_reason", "waiting_scope", "status_counts")}))
     orders, seen = [], {}
     # Provider supplies whole orders in authoritative urgency order.
@@ -107,9 +107,16 @@ def map_snapshot(snapshot, now):
         and not station_source.get('failure_reason')
         and all(row['pending_steps'] is not None for row in stations)
     )
-    busiest = max((row['pending_steps'] for row in stations), default=0) if reliable_stations else None
+    # Load = weighted products due vs station capacity (dashboard/load_model.py).
+    # A station without open work in a complete census is 0%; unknown stays None.
     for row in stations:
-        row['load_percent'] = load_percent(row['pending_steps'], busiest)
+        model = row.get('load_model')
+        if not reliable_stations:
+            row['load_percent'] = None
+        elif model is not None and type(model.get('load_percent')) is int:
+            row['load_percent'] = model['load_percent']
+        else:
+            row['load_percent'] = 0 if row['pending_steps'] == 0 else None
     completion = snapshot.get('completed_today') or {}
     tracker = completion.get('tracker') or {}
     # Keep the count contract compact: gateway consumers validate these exact

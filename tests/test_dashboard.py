@@ -34,7 +34,7 @@ class DashboardTest(unittest.TestCase):
         model=self.client.get('/api/dashboard').json
         self.assertIsNone(model['overall_progress_percent'])
         self.assertEqual(model['native_mean_order_progress_percent'],20)
-        self.assertEqual(model['workstations'][0]['load_percent'], 100)
+        self.assertEqual(model['workstations'][0]['load_percent'], 0)   # fixture line has no delivery date
         self.assertEqual(model['workstations'][0]['running_steps'],1)
         self.assertIsNone(model['today']['completed_today'])
 

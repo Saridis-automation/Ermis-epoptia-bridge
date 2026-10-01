@@ -1,6 +1,14 @@
 "use strict";
 const el = id => document.getElementById(id);
 const percent = value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100 ? `${Math.round(value)}%` : "—";
+// Station load may exceed 100% (more work due than the station can do in time).
+const loadPercent = value => typeof value === "number" && Number.isFinite(value) && value >= 0 ? `${Math.round(value)}%` : "—";
+const dayMonth = iso => typeof iso === "string" && /^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : "—";
+const decimal = value => typeof value === "number" && Number.isFinite(value) ? String(Math.round(value * 10) / 10).replace(".", ",") : "—";
+function loadDetail(model) {
+  const tight = model && model.tightest;
+  return tight ? `ως ${dayMonth(tight.by)}: χρειάζονται ${decimal(tight.needed)} · χωράνε ${decimal(tight.fits)}` : "";
+}
 // UI load is the inverse of the native active-order mean; unknown stays unknown.
 const productionLoad = progress => typeof progress === "number" && Number.isFinite(progress) ? Math.max(0, Math.min(100, 100 - progress)) : null;
 // Presentation only: preserve the verified calendar date without timezone conversion.
@@ -132,10 +140,12 @@ function render(data) {
     updateStar(star);
     heading.append(star);
     const bar = node('div', null, 'bar');
-    const value = typeof station.load_percent === 'number' && Number.isFinite(station.load_percent) && station.load_percent >= 0 && station.load_percent <= 100 ? station.load_percent : null;
+    const value = typeof station.load_percent === 'number' && Number.isFinite(station.load_percent) && station.load_percent >= 0 ? station.load_percent : null;
+    const detail = loadDetail(station.load_model);
     bar.setAttribute('role', 'meter');
-    bar.setAttribute('aria-label', 'Σχετικός αριθμός εκκρεμών εργασιών: 100% = ο μεγαλύτερος ορατός αριθμός');
-    load.title = 'Σχετικός αριθμός εκκρεμών εργασιών, όχι χρονική αξιοποίηση';
+    bar.setAttribute('aria-label', 'Φόρτος σταθμού: προϊόντα που πρέπει να περάσουν ως την πιο σφιχτή προθεσμία ÷ δυνατότητα σταθμού');
+    load.title = `Φόρτος σταθμού (σταθμισμένα προϊόντα ÷ δυνατότητα ως την προθεσμία). ${detail}`.trim();
+    if (value != null && value > 100) card.classList.add('overloaded');
     bar.setAttribute('aria-valuemin', '0');
     bar.setAttribute('aria-valuemax', '100');
     if (value != null) bar.setAttribute('aria-valuenow', String(value));
@@ -143,13 +153,14 @@ function render(data) {
     for (let index = 0; index < 10; index++) {
       const segment = node('span', null, 'segment');
       segment.dataset.level = String(index + 1);
-      segment.dataset.filled = String(value != null && index < Math.ceil(value / 10));
+      segment.dataset.filled = String(value != null && index < Math.min(10, Math.ceil(value / 10)));
       bar.append(segment);
     }
-    load.append(bar, node('strong', percent(value)));
+    load.append(bar, node('strong', loadPercent(value)));
     const count = Number.isSafeInteger(station.pending_steps) && station.pending_steps >= 0 ? station.pending_steps : '—';
     const pending = node('div', null, 'pending');
     pending.append(node('span', 'Εκκρεμείς εργασίες '), node('strong', count));
+    if (detail) pending.append(node('small', detail, 'load-detail'));
     card.append(heading, stationIcon(station.name), load, pending);
     return card;
   }));

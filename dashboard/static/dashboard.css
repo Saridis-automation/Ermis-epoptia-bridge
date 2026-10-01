@@ -25,3 +25,4 @@ header{display:grid;grid-template-columns:440px 320px minmax(0,1fr) 380px;gap:24
 #stations-status,#orders-status,#overdue-status{display:none}
 
 caption{font-size:15px;color:#d9b777;text-align:left;margin-bottom:6px}caption[hidden]{display:none}
+.pending .load-detail{font-size:15px;color:#9fb8c2;white-space:nowrap}.station.overloaded .load strong{color:#ff8b78}

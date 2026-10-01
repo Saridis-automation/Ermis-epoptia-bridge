@@ -98,6 +98,7 @@ def collect_stations(rows, complete):
             executable_queue_steps=None, queue_reason='routing_dependencies_not_verified',
             waiting_scope='all_not_started_or_waiting_routing_steps_including_future',
             status_counts=dict(item['statuses'])))
+    attach_load_model(result, list(seen.values()), valid)
     return dict(station_version=1, complete=valid, workstations=result,
         diagnostics=dict(diagnostics), coverage=dict(rows_read=len(rows),
             distinct_wols=len(seen), terminal_filtered=True,
@@ -106,3 +107,29 @@ def collect_stations(rows, complete):
             commercial_flow_exclusion_verified=False,
             commercial_flow_missing_field='exact_wol_workflow_name_field_unverified',
             excluded_statuses=sorted(TERMINAL), executable_queue_verified=False))
+
+
+def attach_load_model(result, rows, valid, today=None):
+    """Weighted products vs capacity and deadlines (docs/dashboard_load_model.md).
+
+    Only on a complete census; any failure leaves load_model None (shown as "—").
+    """
+    from dashboard.load_model import compute
+    model = None
+    if valid:
+        try:
+            if today is None:
+                from datetime import datetime
+                from zoneinfo import ZoneInfo
+                today = datetime.now(ZoneInfo('Europe/Athens')).date()
+            model = compute(rows, today)['stations']
+        except Exception:
+            model = None
+    for row in result:
+        value = (model or {}).get(row['name'])
+        row['load_model'] = None if value is None else dict(
+            load_percent=value['load_percent'], products=value['products'],
+            days_of_work=value['days_of_work'], capacity_per_day=value['capacity_per_day'],
+            tightest=None if not value['tightest'] else dict(
+                by=value['tightest']['by'], needed=value['tightest']['needed'],
+                fits=value['tightest']['fits']))
