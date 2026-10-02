@@ -192,6 +192,7 @@ class _PageParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.forms = {}
+        self.all_forms = []            # every form, including those without an id
         self.csrf_meta = None
         self.rows = []
         self.info_items = []           # JSON records from <div class="delete…Info d-none">
@@ -207,6 +208,7 @@ class _PageParser(HTMLParser):
         elif tag == "form":
             self._form = dict(method=(a.get("method") or "GET").upper(), action=a.get("action"),
                               fields={}, radios={}, token=None, method_override=None)
+            self.all_forms.append(self._form)
             if a.get("id"):
                 self.forms[a["id"]] = self._form
         elif tag in ("input", "select", "textarea") and self._form is not None:
