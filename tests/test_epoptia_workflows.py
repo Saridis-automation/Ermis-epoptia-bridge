@@ -147,6 +147,24 @@ class UpdateFlowTests(unittest.TestCase):
             self.writer(session).update(900, base, expected_current=wf.signature(base), confirm=True)
         self.assertEqual(session.sent, [])
 
+    def test_create_posts_graph_to_workflow_create_and_verifies(self):
+        create_page = f"""<form action="{BASE}/workflow-create" method="post">
+<input type="hidden" name="_token" value="TOKC"><input type="hidden" name="elementCustomFields">
+<input type="hidden" name="workflowData"><input type="hidden" name="workflowName">
+<input type="hidden" name="madeChangesAtWorkflow"><input type="hidden" name="workflowComments"></form>"""
+        listing = '<div class="deleteWorkflowInfo d-none">' + html.escape(json.dumps({"id": 900, "name": "ERMIS-TEST ροή"})) + '</div>'
+        graph = wf.linear_graph([(28, "ΚΟΠΗ ΨΑΛΙΔΙ", "ΚΟΠΗ ΨΑΛΙΔΙ", 6), (3, "ΣΤΡΑΤΖΑ", "ΣΤΡΑΤΖΑ", 23),
+                                 (7, "ΜΟΝΤΑΖ 1", "ΣΥΝΑΡΜΟΛΟΓΗΣΗ", 21)])
+        session = Session({"/workflows/create": [Response(create_page)],
+                           "/workflows": [Response(""), Response(listing)],
+                           "/workflows/900": [Response(page())]},
+                          [Response(status=302, location=BASE + "/workflows/900")])
+        result = self.writer(session).create("ERMIS-TEST ροή", graph, confirm=True)
+        self.assertEqual(session.sent[0][0], "/workflow-create")
+        self.assertEqual(session.sent[0][1]["data"]["workflowName"], "ERMIS-TEST ροή")
+        self.assertEqual(result["ids"], [900])
+        self.assertTrue(result["verified"])
+
     def test_delete_checks_name(self):
         session = Session({"/workflows/900": [Response(page())]})
         with self.assertRaises(WriteError):

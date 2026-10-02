@@ -10,7 +10,8 @@ How Epoptia stores a workflow (found 2026-10-02 from /workflows/{id} and js/crea
   elementFilesFirst, deleteCustomFieldsFromWorkflow. A node is identified by a page id
   (`id`), its workstation (`se_id`) and its saved element id (`node_id`, 0 = new).
   Steps without any link are not saved. Every step needs a job tag.
-- New template: POST /workflows/store (name) -> empty workflow, then save the graph.
+- New template: the editor page /workflows/create posts name + whole graph to /workflow-create
+  (the /workflows "add" modal posting to /workflows/store answers 405).
 
 Safety: preview unless confirm=True; the live form is checked before every write; the
 current graph must equal what the caller expects (no lost concurrent edits); after a save
@@ -32,9 +33,13 @@ WORKFLOW_UPDATE = FormSpec(
      ("workflowData", "hidden", False), ("workflowName", "hidden", False),
      ("madeChangesAtWorkflow", "hidden", False), ("workflowComments", "hidden", False)))
 
+# The /workflows "add" modal posts to /workflows/store, which answers 405 (dead route).
+# The real editor page /workflows/create posts the whole graph to /workflow-create.
 WORKFLOW_CREATE = FormSpec(
-    "/workflows", None, "POST", "/workflows/store",
-    (("_token", "hidden", False), ("name", "text", True)))
+    "/workflows/create", None, "POST", "/workflow-create",
+    (("_token", "hidden", False), ("elementCustomFields", "hidden", False),
+     ("workflowData", "hidden", False), ("workflowName", "hidden", False),
+     ("madeChangesAtWorkflow", "hidden", False), ("workflowComments", "hidden", False)))
 
 WORKFLOW_DELETE = FormSpec(
     "/workflows", "workflowDeleteForm", "POST", "/workflows/destroy/0",
@@ -155,31 +160,46 @@ class WorkflowWriter:
                 found.append(record["id"])
         return found
 
-    def create(self, name, *, confirm=False):
+    def create(self, name, graph, *, comments="", confirm=False):
+        """New workflow template with its graph in one request (as the editor page does)."""
         action = "create_workflow"
         _clean_text(name, 150)
-        parser, text = self.w._get_page("/workflows")
-        # the create form has no id: find it by its action
+        validate_graph(graph)
+        parser, _ = self.w._get_page(WORKFLOW_CREATE.page)
         form = next((f for f in parser.all_forms
-                     if self.w._same_origin_path(f.get("action")) == "/workflows/store"), None)
+                     if self.w._same_origin_path(f.get("action")) == WORKFLOW_CREATE.action), None)
         if form is None:
-            raise FormChanged("create form (/workflows/store) not found")
+            raise FormChanged(f"create form ({WORKFLOW_CREATE.action}) not found")
         expected = {k: (t, r) for k, t, r in WORKFLOW_CREATE.fields}
         if form["fields"] != expected or form["method"] != "POST":
+            self.w.log(action, "form_check", ok=False, problems=[str(form["fields"])])
             raise FormChanged(f"create form changed: {form['fields']}")
+        self.w.log(action, "form_check", page=WORKFLOW_CREATE.page, ok=True, problems=[])
         if self.find(name):
             raise WriteError(f"a workflow named {name!r} already exists")
-        payload = {"_token": form["token"], "name": name}
-        preview = {"method": "POST", "path": "/workflows/store", "payload": _redact(payload)}
+        data = build_workflow_data(graph)
+        payload = {"_token": form["token"], "elementCustomFields": "",
+                   "workflowData": json.dumps(data, ensure_ascii=False), "workflowName": name,
+                   "madeChangesAtWorkflow": "1", "workflowComments": comments}
+        preview = {"method": "POST", "path": WORKFLOW_CREATE.action,
+                   "payload": _redact(dict(payload, workflowData=data))}
         if not confirm:
             self.w.log(action, "preview", **preview)
             return {"sent": False, **preview}
-        response, _ = self.w._send(action, "/workflows/store", form=payload)
-        if response.status_code != 302:
-            raise WriteError(f"/workflows/store answered HTTP {response.status_code}")
+        response, _ = self.w._send(action, WORKFLOW_CREATE.action, form=payload)
+        location = self.w._same_origin_path(response.headers.get("Location"))
+        if response.status_code not in (200, 302) or location == "/login":
+            raise WriteError(f"{WORKFLOW_CREATE.action} answered HTTP {response.status_code}")
         ids = self.find(name)
-        self.w.log(action, "verified" if len(ids) == 1 else "unverified", ids=ids)
-        return {"sent": True, "ids": ids, "location": self.w._same_origin_path(response.headers.get("Location"))}
+        result = {"sent": True, "ids": ids, "location": location}
+        if len(ids) == 1:
+            _, _, after = self.read(ids[0])
+            result["verified"] = signature(after) == signature(graph)
+            result["after"] = after
+        else:
+            result["verified"] = False
+        self.w.log(action, "verified" if result["verified"] else "unverified", ids=ids)
+        return result
 
     def update(self, workflow_id, graph, *, expected_current, name=None, comments=None, confirm=False):
         """Replace the graph of a workflow; `expected_current` = signature() the caller based it on."""
