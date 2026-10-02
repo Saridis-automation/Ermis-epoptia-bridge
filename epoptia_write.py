@@ -599,13 +599,16 @@ class WebWriter:
         action = "set_wol_status"
         if status not in ("standby", "production", "archive"):
             raise WriteError("status must be standby, production or archive")
+        # Started lines have no delete info on the order page, so read the line's own page.
+        _, line_text = self._get_page(f"/workorderlines/{int(wol_id)}")
+        found = re.search(r'<input[^>]*name="description"[^>]*value="([^"]*)"', line_text) or \
+            re.search(r'<input[^>]*value="([^"]*)"[^>]*name="description"', line_text)
+        if not found or html.unescape(found.group(1)) != expected_description:
+            raise WriteError(f"line {wol_id} is not {expected_description!r}")
+        if f"/workorders/{int(workorder_id)}" not in line_text:
+            raise WriteError(f"line {wol_id} is not on work order {workorder_id}")
         page = f"/workorders/{int(workorder_id)}"
         parser, text = self._get_page(page)
-        lines = {json.loads(html.unescape(b)).get("id"): json.loads(html.unescape(b))
-                 for b in re.findall(r'<div class="deleteWorkorderlineInfo d-none">(.*?)</div>', text, re.S)}
-        line = lines.get(int(wol_id))
-        if line is None or line.get("description") != expected_description:
-            raise WriteError(f"line {wol_id} on order {workorder_id} is not {expected_description!r}")
         form = parser.forms.get(f"statusForm-{int(wol_id)}") or {}
         problems = []
         if self._same_origin_path(form.get("action")) != "/workorderline/set-status" or form.get("method") != "POST":
@@ -624,6 +627,40 @@ class WebWriter:
         if response.status_code not in (200, 302):
             raise WriteError(f"set-status answered HTTP {response.status_code}")
         return {"sent": True, "status": response.status_code}
+
+    def finish_wol_step(self, wol_id, element_id, expected_station, *, confirm=False):
+        """Mark one step of a line as completed by hand (the line page's "Ολοκλήρωση", zeroing-finish)."""
+        action = "finish_wol_step"
+        page = f"/workorderlines/{int(wol_id)}"
+        parser, text = self._get_page(page)
+        form = parser.forms.get("zeroFinishForm") or {}
+        problems = []
+        if self._same_origin_path(form.get("action")) != "/workorderline/zeroing-finish" or form.get("method") != "POST":
+            problems.append("zeroing-finish form changed")
+        hidden = form.get("hidden_values") or {}
+        if str(hidden.get("workorderLineId")) != str(int(wol_id)) or "elementId" not in form.get("fields", {}):
+            problems.append("zeroing-finish form does not belong to this line")
+        if 'value="finish"' not in text:
+            problems.append("finish button not found")
+        match = re.search(r'id="workflowServer"[^>]*>(.*?)</', text, re.S)
+        elements = json.loads(html.unescape(match.group(1)))["elements"] if match else {}
+        element = elements.get(str(int(element_id))) if isinstance(elements, dict) else None
+        if element is None or (element.get("workstation") or {}).get("name") != expected_station:
+            problems.append(f"step {element_id} is not {expected_station!r} on line {wol_id}")
+        self.log(action, "form_check", page=page, ok=not problems, problems=problems)
+        if problems:
+            raise FormChanged("; ".join(problems))
+        payload = {"_token": form["token"], "workorderLineId": str(int(wol_id)),
+                   "elementId": str(int(element_id)), "action": "finish"}
+        preview = {"method": "POST", "path": "/workorderline/zeroing-finish", "payload": _redact(payload)}
+        if not confirm:
+            self.log(action, "preview", **preview)
+            return {"sent": False, **preview}
+        response, _ = self._send(action, "/workorderline/zeroing-finish", form=payload)
+        if response.status_code not in (200, 302):
+            raise WriteError(f"zeroing-finish answered HTTP {response.status_code}")
+        return {"sent": True, "status": response.status_code,
+                "location": self._same_origin_path(response.headers.get("Location"))}
 
     def delete_product(self, product_id, expected_name, *, confirm=False):
         _, text = self._get_page(f"/products/{int(product_id)}")
