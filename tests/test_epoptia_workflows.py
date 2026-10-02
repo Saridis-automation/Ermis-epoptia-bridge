@@ -11,10 +11,10 @@ from epoptia_write import FormChanged, WebWriter, WriteError
 BASE = "https://epoptia.example"
 
 
-def server_json(elements, links):
+def server_json(elements, links, files=()):
     return json.dumps(dict(id=900, type="template", name="ERMIS-TEST ροή", template=True, comments="",
                            elements={str(e["id"]): e for e in elements},
-                           links={str(l["id"]): l for l in links}, files=[], elementsFiles=[]))
+                           links={str(l["id"]): l for l in links}, files=list(files), elementsFiles=[]))
 
 
 def element(eid, ws_id, ws_name, tag, tag_id, left):
@@ -29,10 +29,11 @@ LINKS = [dict(id=11, parent_element=1, child_element=2, output_id="output-right"
          dict(id=12, parent_element=2, child_element=3, output_id="output-right", input_id="input-left")]
 
 
-def page(elements=THREE, links=LINKS, extra="", attached="[]"):
+def page(elements=THREE, links=LINKS, extra="", attached="[]", files=()):
     return f"""<div id="tmpWorkflowElementsCustomFields" class="d-none">{attached}</div>
 <button data-id="6" class="btn btn-sm btn-outline-danger customFieldRemove mr-2"></button>
-<div id="workflowServer" class="d-none">{html.escape(server_json(elements, links))}</div>
+<button data-type="text" data-id="6" data-checkbox="" class="btn btn-sm btn-outline-secondary customFieldEdit" data-mandatorycheckbeforeproduction="1"></button>
+<div id="workflowServer" class="d-none">{html.escape(server_json(elements, links, files))}</div>
 <form id="workflowForm" method="POST" action="{BASE}/workflow-update/900">
 <input type="hidden" name="_token" value="TOKWF"><input type="hidden" name="_method" value="put">
 <input type="hidden" name="deleteCustomFieldsFromWorkflow"><input type="hidden" name="elementFiles">
@@ -97,6 +98,9 @@ class GraphTests(unittest.TestCase):
         with self.assertRaises(WriteError):
             wf.validate_graph(g)
 
+    def test_mandatory_flags(self):
+        self.assertEqual(wf.mandatory_flags(page()), {"6": True})
+
     def test_custom_field_detection(self):
         self.assertFalse(wf.has_custom_field_settings(page()))           # catalogue buttons only
         attached = html.escape(json.dumps({"6": {"1": {"is_show": 1}}}))
@@ -138,14 +142,35 @@ class UpdateFlowTests(unittest.TestCase):
         self.assertTrue(result["verified"])
         self.assertNotIn("TOKWF", self.log.read_text())
 
-    def test_refuses_stale_base_and_custom_fields(self):
+    def test_update_keeps_attached_fields_and_shows_them_on_new_steps(self):
+        attached = html.escape(json.dumps({"6": {"1": {"is_show": 1}, "2": {"is_show": 1, "is_check": 1}, "3": {"is_show": 1}}}))
+        base = wf.parse_workflow(page())
+        new = json.loads(json.dumps(base))
+        new["nodes"] = {int(k): v for k, v in new["nodes"].items()}
+        new["nodes"][4] = dict(node_id=0, workstation_id=23, workstation="ΨΥΚΤΙΚΑ", tag="ΕΓΚΑΤΑΣΤΑΣΗ ΨΥΚΤΙΚΩΝ",
+                               tag_id=14, mode="semi", is_or=0, top="0px", left="360px", comment="", default_average=0)
+        new["links"].append(dict(link_id=0, parent=3, child=4, output="output-right", input="input-left"))
+        after_attached = html.escape(json.dumps({"6": {str(i): {"is_show": 1} for i in (1, 2, 3, 4)}}))
+        after = page(THREE + [element(4, 23, "ΨΥΚΤΙΚΑ", "ΕΓΚΑΤΑΣΤΑΣΗ ΨΥΚΤΙΚΩΝ", 14, 360)],
+                     LINKS + [dict(id=13, parent_element=3, child_element=4, output_id="output-right", input_id="input-left")],
+                     attached=after_attached)
+        session = Session({"/workflows/900": [Response(page(attached=attached)), Response(after)]},
+                          [Response(status=302, location=BASE + "/workflows/900")])
+        result = self.writer(session).update(900, new, expected_current=wf.signature(base), confirm=True)
+        sent = json.loads(session.sent[0][1]["data"]["elementCustomFields"])
+        self.assertEqual(sent["6"]["mandatorycheckbeforeproduction"], True)
+        self.assertEqual(sent["6"]["elements"]["ermis-2"], {"show": True, "check": True})   # saved settings kept
+        self.assertEqual(sent["6"]["elements"]["ermis-4"], {"show": True})                  # new step visible
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["shown_steps"], {"6": 4})
+
+    def test_refuses_stale_base_and_files(self):
         base = wf.parse_workflow(page())
         stale = dict(wf.signature(base), links=[])
         session = Session({"/workflows/900": [Response(page())]})
         with self.assertRaises(FormChanged):
             self.writer(session).update(900, base, expected_current=stale, confirm=True)
-        attached = html.escape(json.dumps({"6": {"1": {"is_show": 1}}}))
-        session = Session({"/workflows/900": [Response(page(attached=attached))]})
+        session = Session({"/workflows/900": [Response(page(files=[{"id": 1}]))]})
         with self.assertRaises(FormChanged):
             self.writer(session).update(900, base, expected_current=wf.signature(base), confirm=True)
         self.assertEqual(session.sent, [])

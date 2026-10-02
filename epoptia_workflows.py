@@ -15,8 +15,8 @@ How Epoptia stores a workflow (found 2026-10-02 from /workflows/{id} and js/crea
 
 Safety: preview unless confirm=True; the live form is checked before every write; the
 current graph must equal what the caller expects (no lost concurrent edits); after a save
-the graph is read back and compared. Custom-field and file settings per step are only
-supported when the workflow has none (refused otherwise, until that path is verified).
+the graph and the attached custom fields are read back and compared. Attached custom fields
+are kept (saved per-step settings; new steps visible). Workflows with attached FILES are refused.
 """
 import html
 import json
@@ -90,6 +90,38 @@ def attached_custom_fields(text):
 
 def has_custom_field_settings(text):
     return bool(attached_custom_fields(text))
+
+
+def mandatory_flags(text):
+    """{custom_field_id: bool} 'mandatory check before production' of the attached fields."""
+    return {m.group(1): m.group(2) not in ("", "0", "false")
+            for m in re.finditer(r'<button[^>]*data-id="(\d+)"[^>]*customFieldEdit[^>]*'
+                                 r'data-mandatorycheckbeforeproduction="([^"]*)"', text)}
+
+
+SETTING_KEYS = (("is_show", "show"), ("is_check", "check"), ("editable", "editable"),
+                ("mandatory_editable", "mandatory-editable"), ("strict_comparison", "strict_comparison"))
+
+
+def build_custom_fields(graph, attached, flags, *, new_steps_show=True):
+    """elementCustomFields as the editor posts it: every attached field, settings for EVERY step.
+
+    Existing steps keep their saved settings; new steps get show=true (SARIDIS: every station
+    sees every field). Keys are the page ids used in workflowData ("ermis-<key>").
+    """
+    out = {}
+    for cf_id, saved in attached.items():
+        elements = {}
+        for key, node in graph["nodes"].items():
+            old = saved.get(str(node.get("node_id"))) if node.get("node_id") else None
+            if old is not None:
+                settings = {new: True for src, new in SETTING_KEYS if old.get(src)}
+            else:
+                settings = {"show": True} if new_steps_show else {}
+            if settings:
+                elements[f"ermis-{key}"] = settings
+        out[str(cf_id)] = dict(mandatorycheckbeforeproduction=bool(flags.get(str(cf_id))), elements=elements)
+    return out
 
 
 def signature(graph):
@@ -171,7 +203,7 @@ class WorkflowWriter:
                 found.append(record["id"])
         return found
 
-    def create(self, name, graph, *, comments="", confirm=False):
+    def create(self, name, graph, *, comments="", custom_fields=(), confirm=False):
         """New workflow template with its graph in one request (as the editor page does)."""
         action = "create_workflow"
         _clean_text(name, 150)
@@ -189,7 +221,8 @@ class WorkflowWriter:
         if self.find(name):
             raise WriteError(f"a workflow named {name!r} already exists")
         data = build_workflow_data(graph)
-        payload = {"_token": form["token"], "elementCustomFields": "",
+        cf = build_custom_fields(graph, {str(c): {} for c in custom_fields}, {})
+        payload = {"_token": form["token"], "elementCustomFields": json.dumps(cf) if cf else "",
                    "workflowData": json.dumps(data, ensure_ascii=False), "workflowName": name,
                    "madeChangesAtWorkflow": "1", "workflowComments": comments}
         preview = {"method": "POST", "path": WORKFLOW_CREATE.action,
@@ -204,15 +237,21 @@ class WorkflowWriter:
         ids = self.find(name)
         result = {"sent": True, "ids": ids, "location": location}
         if len(ids) == 1:
-            _, _, after = self.read(ids[0])
-            result["verified"] = signature(after) == signature(graph)
-            result["after"] = after
+            _, text_after, _ = self.read(ids[0])
+            after = parse_workflow(text_after)
+            attached = attached_custom_fields(text_after)
+            result["verified"] = (signature(after) == signature(graph)
+                                  and set(attached) == {str(c) for c in custom_fields}
+                                  and all(len(v) == len(after["nodes"]) and all(e.get("is_show") for e in v.values())
+                                          for v in attached.values()))
+            result["after"], result["custom_fields"] = after, attached
         else:
             result["verified"] = False
         self.w.log(action, "verified" if result["verified"] else "unverified", ids=ids)
         return result
 
-    def update(self, workflow_id, graph, *, expected_current, name=None, comments=None, confirm=False):
+    def update(self, workflow_id, graph, *, expected_current, name=None, comments=None,
+               custom_fields="keep", confirm=False):
         """Replace the graph of a workflow; `expected_current` = signature() the caller based it on."""
         action = "update_workflow"
         validate_graph(graph)
@@ -226,14 +265,19 @@ class WorkflowWriter:
             problems.append("update form lost _method=put")
         if signature(current) != expected_current:
             problems.append("the workflow changed since it was read; read it again")
-        if current["files"] or current["element_files"] or has_custom_field_settings(text):
-            problems.append("workflow has step files/custom-field settings: not supported yet")
+        if current["files"] or current["element_files"]:
+            problems.append("workflow has attached files: not supported yet")
+        attached = attached_custom_fields(text)
+        if custom_fields not in ("keep", "empty"):
+            problems.append("custom_fields must be 'keep' or 'empty'")
         self.w.log(action, "form_check", page=spec.page, ok=not problems, problems=problems)
         if problems:
             raise FormChanged("; ".join(problems))
         data = build_workflow_data(graph)
+        cf = build_custom_fields(graph, attached, mandatory_flags(text)) if custom_fields == "keep" else {}
         payload = {"_token": form["token"], "_method": "put", "deleteCustomFieldsFromWorkflow": "",
-                   "elementFiles": "", "elementFilesFirst": "", "elementCustomFields": "",
+                   "elementFiles": "", "elementFilesFirst": "",
+                   "elementCustomFields": json.dumps(cf) if cf else "",
                    "workflowData": json.dumps(data, ensure_ascii=False),
                    "workflowName": name if name is not None else current["name"],
                    "madeChangesAtWorkflow": "1",
@@ -245,13 +289,18 @@ class WorkflowWriter:
         response, _ = self.w._send(action, spec.action, form=payload)
         if response.status_code not in (200, 302) or self.w._same_origin_path(response.headers.get("Location")) == "/login":
             raise WriteError(f"{spec.action} answered HTTP {response.status_code}")
-        _, _, after = self.read(workflow_id)
+        _, text_after, after = self.read(workflow_id)
+        attached_after = attached_custom_fields(text_after)
         wanted = signature(dict(graph, nodes={k: dict(v, comment=v.get("comment", ""), is_or=v.get("is_or", 0))
                                                for k, v in graph["nodes"].items()}))
-        ok = signature(after) == wanted
+        fields_kept = set(attached_after) == set(attached)
+        shown = {cf: sum(1 for e in v.values() if e.get("is_show")) for cf, v in attached_after.items()}
+        ok = signature(after) == wanted and fields_kept
         self.w.log(action, "verified" if ok else "unverified", workflow=workflow_id,
-                   after=signature(after))
-        return {"sent": True, "verified": ok, "after": after}
+                   after=signature(after), custom_fields_before=sorted(attached),
+                   custom_fields_after=sorted(attached_after), shown_steps=shown)
+        return {"sent": True, "verified": ok, "after": after, "custom_fields": attached_after,
+                "fields_kept": fields_kept, "shown_steps": shown, "steps": len(after["nodes"])}
 
     def delete(self, workflow_id, expected_name, *, confirm=False):
         action = "delete_workflow"
