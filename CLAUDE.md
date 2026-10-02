@@ -34,6 +34,7 @@ Everything below already exists and works. Do not rediscover it, and do not ask 
 - **Writes** (orders, products, clients, workflows, name-checked deletes): `epoptia_write.py`.
   Endpoints and conventions are in `docs/epoptia_form_map.md`.
   For a PDF order: `create-order --plan inbox/<x>.plan.json` (preview first, then `--confirm`).
+- **Workflows (read/create/edit/delete):** `epoptia_workflows.py`; format and ids in `docs/epoptia_form_map.md`.
 - **Station load in the dashboard:** `dashboard/load_model.py`. Model and parameters: `docs/dashboard_load_model.md`.
 - **Terminology:** a SARIDIS "κωδικός προϊόντος" = work order LINE id (e.g. 2380).
 - **The user's open requests and dates** live in Claude's auto-memory for this folder. It is loaded automatically.
