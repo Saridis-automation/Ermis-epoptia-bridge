@@ -589,8 +589,13 @@ class WebWriter:
                               {"workorder": int(workorder_id), "line": int(wol_id),
                                "description": expected_description}, confirm=confirm)
         if result["sent"]:
-            _, after = self._get_page(page)
-            result["verified"] = f'&quot;id&quot;:{int(wol_id)},' not in after and f'"id":{int(wol_id)},' not in after
+            try:
+                _, after = self._get_page(page)
+                result["verified"] = f'&quot;id&quot;:{int(wol_id)},' not in after and f'"id":{int(wol_id)},' not in after
+            except WriteError:
+                # Epoptia removes an order whose last line was deleted; its page then redirects.
+                result["verified"] = True
+                result["order_removed"] = True
             self.log("delete_workorderline", "verified" if result["verified"] else "unverified", line=int(wol_id))
         return result
 
@@ -628,9 +633,12 @@ class WebWriter:
             raise WriteError(f"set-status answered HTTP {response.status_code}")
         return {"sent": True, "status": response.status_code}
 
-    def finish_wol_step(self, wol_id, element_id, expected_station, *, confirm=False):
-        """Mark one step of a line as completed by hand (the line page's "Ολοκλήρωση", zeroing-finish)."""
-        action = "finish_wol_step"
+    def finish_wol_step(self, wol_id, element_id, expected_station, *, confirm=False, mode="finish"):
+        """Complete one step by hand ("Ολοκλήρωση", mode=finish) or reset its progress
+        ("Επανεργασία" for the whole quantity, mode=zero) - the line page's zeroing-finish form."""
+        if mode not in ("finish", "zero"):
+            raise WriteError("mode must be finish or zero")
+        action = "finish_wol_step" if mode == "finish" else "zero_wol_step"
         page = f"/workorderlines/{int(wol_id)}"
         parser, text = self._get_page(page)
         form = parser.forms.get("zeroFinishForm") or {}
@@ -640,8 +648,8 @@ class WebWriter:
         hidden = form.get("hidden_values") or {}
         if str(hidden.get("workorderLineId")) != str(int(wol_id)) or "elementId" not in form.get("fields", {}):
             problems.append("zeroing-finish form does not belong to this line")
-        if 'value="finish"' not in text:
-            problems.append("finish button not found")
+        if f'value="{mode}"' not in text:
+            problems.append(f"{mode} button not found")
         match = re.search(r'id="workflowServer"[^>]*>(.*?)</', text, re.S)
         elements = json.loads(html.unescape(match.group(1)))["elements"] if match else {}
         element = elements.get(str(int(element_id))) if isinstance(elements, dict) else None
@@ -651,7 +659,7 @@ class WebWriter:
         if problems:
             raise FormChanged("; ".join(problems))
         payload = {"_token": form["token"], "workorderLineId": str(int(wol_id)),
-                   "elementId": str(int(element_id)), "action": "finish"}
+                   "elementId": str(int(element_id)), "action": mode}
         preview = {"method": "POST", "path": "/workorderline/zeroing-finish", "payload": _redact(payload)}
         if not confirm:
             self.log(action, "preview", **preview)
