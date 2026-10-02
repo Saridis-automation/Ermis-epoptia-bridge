@@ -594,6 +594,37 @@ class WebWriter:
             self.log("delete_workorderline", "verified" if result["verified"] else "unverified", line=int(wol_id))
         return result
 
+    def set_wol_status(self, workorder_id, wol_id, status, expected_description, *, confirm=False):
+        """Change a work order line's status (standby / production / archive), as the order page does."""
+        action = "set_wol_status"
+        if status not in ("standby", "production", "archive"):
+            raise WriteError("status must be standby, production or archive")
+        page = f"/workorders/{int(workorder_id)}"
+        parser, text = self._get_page(page)
+        lines = {json.loads(html.unescape(b)).get("id"): json.loads(html.unescape(b))
+                 for b in re.findall(r'<div class="deleteWorkorderlineInfo d-none">(.*?)</div>', text, re.S)}
+        line = lines.get(int(wol_id))
+        if line is None or line.get("description") != expected_description:
+            raise WriteError(f"line {wol_id} on order {workorder_id} is not {expected_description!r}")
+        form = parser.forms.get(f"statusForm-{int(wol_id)}") or {}
+        problems = []
+        if self._same_origin_path(form.get("action")) != "/workorderline/set-status" or form.get("method") != "POST":
+            problems.append("status form changed")
+        if set(form.get("fields", {})) != {"_token", "id", "status"}:
+            problems.append(f"status form fields changed: {sorted(form.get('fields', {}))}")
+        self.log(action, "form_check", page=page, ok=not problems, problems=problems)
+        if problems:
+            raise FormChanged("; ".join(problems))
+        payload = {"_token": form["token"], "id": str(int(wol_id)), "status": status}
+        preview = {"method": "POST", "path": "/workorderline/set-status", "payload": _redact(payload)}
+        if not confirm:
+            self.log(action, "preview", **preview)
+            return {"sent": False, **preview}
+        response, _ = self._send(action, "/workorderline/set-status", form=payload)
+        if response.status_code not in (200, 302):
+            raise WriteError(f"set-status answered HTTP {response.status_code}")
+        return {"sent": True, "status": response.status_code}
+
     def delete_product(self, product_id, expected_name, *, confirm=False):
         _, text = self._get_page(f"/products/{int(product_id)}")
         match = re.search(r"#%d \((.*?)\)</div>" % int(product_id), text)

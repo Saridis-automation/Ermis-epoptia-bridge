@@ -108,6 +108,74 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(list(wf.attached_custom_fields(page(attached=attached))), ["6"])
 
 
+def wol_page(elements=THREE, links=LINKS, hits=None, template=False, wol=3300):
+    meta = json.loads(server_json(elements, links))
+    meta.update(type="template" if template else "workorderline", template=template, name=f"workorderline: {wol}")
+    hits = hits if hits is not None else {str(e["id"]): {"elementInfo": {"is_active": 1}} for e in elements}
+    return f"""<div id="tmpWorkflowElementsCustomFields" class="d-none">[]</div>
+<div id="workorderLineHits" class="d-none">{html.escape(json.dumps(hits))}</div>
+<div id="workflowServer" class="d-none">{html.escape(json.dumps(meta))}</div>
+<form id="workflowForm" method="POST" action="{BASE}/workflow-update/900">
+<input type="hidden" name="_token" value="TOKWF"><input type="hidden" name="_method" value="put">
+<input type="hidden" name="deleteCustomFieldsFromWorkflow"><input type="hidden" name="elementFiles">
+<input type="hidden" name="elementFilesFirst"><input type="hidden" name="elementCustomFields">
+<input type="hidden" name="workflowData"><input type="hidden" name="workflowName">
+<input type="hidden" name="madeChangesAtWorkflow"><input type="hidden" name="workflowComments">
+<input type="hidden" name="workorderLine" value="{wol}" />
+</form>"""
+
+
+class WolWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.log = Path(d.name) / "w.log"
+
+    def writer(self, session):
+        return wf.WorkflowWriter(WebWriter(BASE, "u", "p", session=session, login=lambda *a: True, log_path=self.log))
+
+    def extended(self, base):
+        new = json.loads(json.dumps(base))
+        new["nodes"] = {int(k): v for k, v in new["nodes"].items()}
+        new["nodes"][4] = dict(node_id=0, workstation_id=1, workstation="ΕΙΣΑΓΩΓΗ ΠΑΡΑΓΓΕΛΙΑΣ", tag="ADMIN", tag_id=25,
+                               mode="semi", is_or=0, top="0px", left="360px", comment="", default_average=0)
+        new["links"].append(dict(link_id=0, parent=3, child=4, output="output-right", input="input-left"))
+        return new
+
+    def test_line_on_template_is_refused(self):
+        base = wf.parse_workflow(wol_page(template=True))
+        session = Session({"/workorderlines/3300/workflow/900": [Response(wol_page(template=True))]})
+        with self.assertRaises(FormChanged):
+            self.writer(session).update_wol(3300, 900, self.extended(base), expected_current=wf.signature(base), confirm=True)
+        self.assertEqual(session.sent, [])
+
+    def test_step_with_progress_cannot_be_removed_or_changed(self):
+        hits = {"1": {"elementInfo": {"is_active": 1, "element_done": 1, "first_start": "x"}},
+                "2": {"elementInfo": {"is_active": 1}}, "3": {"elementInfo": {"is_active": 1}}}
+        text = wol_page(hits=hits)
+        base = wf.parse_workflow(text)
+        broken = json.loads(json.dumps(base))
+        broken["nodes"] = {int(k): v for k, v in broken["nodes"].items()}
+        broken["nodes"][1]["tag_id"] = 99
+        session = Session({"/workorderlines/3300/workflow/900": [Response(text)]})
+        with self.assertRaises(FormChanged):
+            self.writer(session).update_wol(3300, 900, broken, expected_current=wf.signature(base), confirm=True)
+        self.assertEqual(session.sent, [])
+
+    def test_adding_a_step_to_a_running_line_posts_workorderline(self):
+        hits = {"1": {"elementInfo": {"is_active": 1, "element_done": 1, "first_start": "x"}},
+                "2": {"elementInfo": {"is_active": 1}}, "3": {"elementInfo": {"is_active": 1}}}
+        base = wf.parse_workflow(wol_page(hits=hits))
+        after = wol_page(THREE + [element(4, 1, "ΕΙΣΑΓΩΓΗ ΠΑΡΑΓΓΕΛΙΑΣ", "ADMIN", 25, 360)],
+                         LINKS + [dict(id=13, parent_element=3, child_element=4, output_id="output-right", input_id="input-left")],
+                         hits=dict(hits, **{"4": {"elementInfo": {"is_active": 1}}}))
+        session = Session({"/workorderlines/3300/workflow/900": [Response(wol_page(hits=hits)), Response(after)]},
+                          [Response(status=302, location=BASE + "/workorderlines/3300")])
+        result = self.writer(session).update_wol(3300, 900, self.extended(base), expected_current=wf.signature(base), confirm=True)
+        self.assertEqual(session.sent[0][1]["data"]["workorderLine"], "3300")
+        self.assertTrue(result["verified"])
+
+
 class UpdateFlowTests(unittest.TestCase):
     def setUp(self):
         d = tempfile.TemporaryDirectory()

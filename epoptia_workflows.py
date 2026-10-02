@@ -13,6 +13,11 @@ How Epoptia stores a workflow (found 2026-10-02 from /workflows/{id} and js/crea
 - New template: the editor page /workflows/create posts name + whole graph to /workflow-create
   (the /workflows "add" modal posting to /workflows/store answers 405).
 
+Levels (2026-10-02): products point straight at a TEMPLATE (no per-product copy). A work order
+line gets its OWN workflow copy (type "workorderline", name "workorderline: <id>") when it goes
+into production; edit it at /workorderlines/{wol}/workflow/{wf} (same save + workorderLine field).
+Steps with progress are locked as the page locks them; a line still on a template is refused.
+
 Safety: preview unless confirm=True; the live form is checked before every write; the
 current graph must equal what the caller expects (no lost concurrent edits); after a save
 the graph and the attached custom fields are read back and compared. Attached custom fields
@@ -186,6 +191,54 @@ def linear_graph(steps):
     return dict(nodes=nodes, links=links)
 
 
+def wol_hits(text):
+    match = re.search(r'id="workorderLineHits"[^>]*>(.*?)</div>', text, re.S)
+    if not match:
+        raise WriteError("step progress (workorderLineHits) not found on the line's workflow page")
+    value = html.unescape(match.group(1)).strip()
+    data = json.loads(value) if value else {}
+    return data if isinstance(data, dict) else {}
+
+
+def locked_steps(text, graph):
+    """Saved steps the page itself would not let you move or unlink (as js/create_lines.js):
+    no progress record, started at least once, done, or being worked on now."""
+    hits = wol_hits(text)
+    locked = set()
+    for key, node in graph["nodes"].items():
+        info = (hits.get(str(node["node_id"])) or {}).get("elementInfo")
+        if info is None or info.get("first_start") or info.get("element_done") or info.get("working_now"):
+            locked.add(key)
+    return locked
+
+
+def wol_problems(parser, text, current, graph, wol_id):
+    """Extra checks for a work order line's own workflow."""
+    problems = []
+    form = parser.forms.get(WORKFLOW_UPDATE.form_id) or {}
+    if str((form.get("hidden_values") or {}).get("workorderLine")) != str(int(wol_id)):
+        problems.append("the page is not this work order line's workflow")
+    match = re.search(r'id="workflowServer"[^>]*>(.*?)</', text, re.S)
+    meta = json.loads(html.unescape(match.group(1))) if match else {}
+    if meta.get("template") or meta.get("type") != "workorderline":
+        problems.append("this line still uses a TEMPLATE (not started in production): saving would change "
+                        "the template for every product; refused")
+    locked = locked_steps(text, current)
+    for key in locked:
+        old, new = current["nodes"][key], graph["nodes"].get(key)
+        if new is None:
+            problems.append(f"step {old['workstation']} ({old['tag']}) has progress and cannot be removed")
+            continue
+        for field in ("workstation_id", "tag_id", "mode", "is_or"):
+            if new.get(field) != old.get(field):
+                problems.append(f"step {old['workstation']} ({old['tag']}) has progress: {field} cannot change")
+    kept = {(l["parent"], l["child"]) for l in graph["links"]}
+    for link in current["links"]:
+        if link["parent"] in locked and (link["parent"], link["child"]) not in kept:
+            problems.append(f"link from {current['nodes'][link['parent']]['workstation']} has progress and cannot be removed")
+    return problems
+
+
 class WorkflowWriter:
     def __init__(self, writer: WebWriter):
         self.w = writer
@@ -251,15 +304,24 @@ class WorkflowWriter:
         return result
 
     def update(self, workflow_id, graph, *, expected_current, name=None, comments=None,
-               custom_fields="keep", confirm=False):
+               custom_fields="keep", confirm=False, _wol=None):
         """Replace the graph of a workflow; `expected_current` = signature() the caller based it on."""
-        action = "update_workflow"
+        action = "update_workflow" if _wol is None else "update_wol_workflow"
         validate_graph(graph)
-        parser, text, current = self.read(workflow_id)
-        spec = FormSpec(WORKFLOW_UPDATE.page.format(id=workflow_id), WORKFLOW_UPDATE.form_id,
-                        WORKFLOW_UPDATE.method, WORKFLOW_UPDATE.action.format(id=workflow_id),
-                        WORKFLOW_UPDATE.fields)
+        if _wol is None:
+            parser, text, current = self.read(workflow_id)
+            page = WORKFLOW_UPDATE.page.format(id=workflow_id)
+            fields = WORKFLOW_UPDATE.fields
+        else:
+            page = f"/workorderlines/{int(_wol)}/workflow/{int(workflow_id)}"
+            parser, text = self.w._get_page(page)
+            current = parse_workflow(text)
+            fields = WORKFLOW_UPDATE.fields + (("workorderLine", "hidden", False),)
+        spec = FormSpec(page, WORKFLOW_UPDATE.form_id, WORKFLOW_UPDATE.method,
+                        WORKFLOW_UPDATE.action.format(id=workflow_id), fields)
         problems = self.w._check_form(parser, spec)
+        if _wol is not None:
+            problems += wol_problems(parser, text, current, graph, _wol)
         form = parser.forms.get(spec.form_id) or {}
         if str(form.get("method_override", "")).lower() != "put":
             problems.append("update form lost _method=put")
@@ -282,6 +344,8 @@ class WorkflowWriter:
                    "workflowName": name if name is not None else current["name"],
                    "madeChangesAtWorkflow": "1",
                    "workflowComments": comments if comments is not None else current["comments"]}
+        if _wol is not None:
+            payload["workorderLine"] = str(int(_wol))
         preview = {"method": "POST", "path": spec.action, "payload": _redact(dict(payload, workflowData=data))}
         if not confirm:
             self.w.log(action, "preview", **preview)
@@ -289,7 +353,11 @@ class WorkflowWriter:
         response, _ = self.w._send(action, spec.action, form=payload)
         if response.status_code not in (200, 302) or self.w._same_origin_path(response.headers.get("Location")) == "/login":
             raise WriteError(f"{spec.action} answered HTTP {response.status_code}")
-        _, text_after, after = self.read(workflow_id)
+        if _wol is None:
+            _, text_after, after = self.read(workflow_id)
+        else:
+            _, text_after = self.w._get_page(page)
+            after = parse_workflow(text_after)
         attached_after = attached_custom_fields(text_after)
         wanted = signature(dict(graph, nodes={k: dict(v, comment=v.get("comment", ""), is_or=v.get("is_or", 0))
                                                for k, v in graph["nodes"].items()}))
@@ -301,6 +369,23 @@ class WorkflowWriter:
                    custom_fields_after=sorted(attached_after), shown_steps=shown)
         return {"sent": True, "verified": ok, "after": after, "custom_fields": attached_after,
                 "fields_kept": fields_kept, "shown_steps": shown, "steps": len(after["nodes"])}
+
+    def read_wol(self, wol_id):
+        """The work order line's own workflow: (workflow_id, graph, locked step keys, meta)."""
+        _, text = self.w._get_page(f"/workorderlines/{int(wol_id)}")
+        ids = sorted(set(re.findall(r"/workorderlines/%d/workflow/(\d+)" % int(wol_id), text)))
+        if len(ids) != 1:
+            raise WriteError(f"line {wol_id}: expected one workflow link, found {ids}")
+        _, page = self.w._get_page(f"/workorderlines/{int(wol_id)}/workflow/{ids[0]}")
+        graph = parse_workflow(page)
+        meta = json.loads(html.unescape(re.search(r'id="workflowServer"[^>]*>(.*?)</', page, re.S).group(1)))
+        return int(ids[0]), graph, locked_steps(page, graph), dict(type=meta.get("type"), template=meta.get("template"),
+                                                                 name=meta.get("name"))
+
+    def update_wol(self, wol_id, workflow_id, graph, *, expected_current, custom_fields="keep", confirm=False):
+        """Change the steps of ONE work order line in production (its own workflow copy only)."""
+        return self.update(workflow_id, graph, expected_current=expected_current,
+                           custom_fields=custom_fields, confirm=confirm, _wol=wol_id)
 
     def delete(self, workflow_id, expected_name, *, confirm=False):
         action = "delete_workflow"
