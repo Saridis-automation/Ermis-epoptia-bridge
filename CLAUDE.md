@@ -18,6 +18,26 @@ Services (systemd):
 - Voice/ERMIS Gateway (`ermis_gateway_server.py`, port 8002) is NOT deployed; it depends on the
   disabled MCP servers. To be discussed with the user.
 
+## Quick start for a new session (read this before searching anything)
+Everything below already exists and works. Do not rediscover it, and do not ask the user for API addresses or keys.
+- **Look up Epoptia data FIRST in the local copy, without any request to Epoptia:**
+  `~/epoptia-backup/epoptia.sqlite`, table `records`.
+  - `kind` is one of: product, client, workstation, workflow, customfield, tag, workorderline.
+  - `data` is the full JSON of each record.
+  - The copy is refreshed nightly at 23:30. Example:
+    `venv/bin/python -c "import sqlite3,json,os; ..."` or `dashboard.load_model._lines_from_backup()`.
+  - Workflow template pages are kept in `~/epoptia-backup/raw/<date>/workflow_<id>.html.gz`.
+- **Need fresh data during the day?** Only if the user asks:
+  - all work order lines: `venv/bin/python epoptia_backup.py --now --only workorderline` (32 GETs, ~3 min)
+  - one page: `epoptia_write.WebWriter` (`_writer_from_env()._get_page('/products/1427')`)
+  - All of it goes through the throttle.
+- **Writes** (orders, products, clients, workflows, name-checked deletes): `epoptia_write.py`.
+  Endpoints and conventions are in `docs/epoptia_form_map.md`.
+  For a PDF order: `create-order --plan inbox/<x>.plan.json` (preview first, then `--confirm`).
+- **Station load in the dashboard:** `dashboard/load_model.py`. Model and parameters: `docs/dashboard_load_model.md`.
+- **Terminology:** a SARIDIS "κωδικός προϊόντος" = work order LINE id (e.g. 2380).
+- **The user's open requests and dates** live in Claude's auto-memory for this folder. It is loaded automatically.
+
 ## Confirmed working (historical, re-verify)
 - Runs 24/7 without the developer Mac (since 6 Sep 2026).
 - Epoptia API reads: `GET /api/3.03/workorderlines` (32 pages / 3,131 records),
