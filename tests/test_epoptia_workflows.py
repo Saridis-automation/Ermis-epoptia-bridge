@@ -29,8 +29,10 @@ LINKS = [dict(id=11, parent_element=1, child_element=2, output_id="output-right"
          dict(id=12, parent_element=2, child_element=3, output_id="output-right", input_id="input-left")]
 
 
-def page(elements=THREE, links=LINKS, extra=""):
-    return f"""<div id="workflowServer" class="d-none">{html.escape(server_json(elements, links))}</div>
+def page(elements=THREE, links=LINKS, extra="", attached="[]"):
+    return f"""<div id="tmpWorkflowElementsCustomFields" class="d-none">{attached}</div>
+<button data-id="6" class="btn btn-sm btn-outline-danger customFieldRemove mr-2"></button>
+<div id="workflowServer" class="d-none">{html.escape(server_json(elements, links))}</div>
 <form id="workflowForm" method="POST" action="{BASE}/workflow-update/900">
 <input type="hidden" name="_token" value="TOKWF"><input type="hidden" name="_method" value="put">
 <input type="hidden" name="deleteCustomFieldsFromWorkflow"><input type="hidden" name="elementFiles">
@@ -96,10 +98,10 @@ class GraphTests(unittest.TestCase):
             wf.validate_graph(g)
 
     def test_custom_field_detection(self):
-        self.assertFalse(wf.has_custom_field_settings(page()))
-        self.assertTrue(wf.has_custom_field_settings(page(extra='<button class="customFieldRemove">')))
-        self.assertTrue(wf.has_custom_field_settings(
-            page(extra='<div id="tmpWorkflowElementsCustomFields">{"6": {"12": {}}}</div>')))
+        self.assertFalse(wf.has_custom_field_settings(page()))           # catalogue buttons only
+        attached = html.escape(json.dumps({"6": {"1": {"is_show": 1}}}))
+        self.assertTrue(wf.has_custom_field_settings(page(attached=attached)))
+        self.assertEqual(list(wf.attached_custom_fields(page(attached=attached))), ["6"])
 
 
 class UpdateFlowTests(unittest.TestCase):
@@ -142,7 +144,8 @@ class UpdateFlowTests(unittest.TestCase):
         session = Session({"/workflows/900": [Response(page())]})
         with self.assertRaises(FormChanged):
             self.writer(session).update(900, base, expected_current=stale, confirm=True)
-        session = Session({"/workflows/900": [Response(page(extra='<b class="customFieldRemove"></b>'))]})
+        attached = html.escape(json.dumps({"6": {"1": {"is_show": 1}}}))
+        session = Session({"/workflows/900": [Response(page(attached=attached))]})
         with self.assertRaises(FormChanged):
             self.writer(session).update(900, base, expected_current=wf.signature(base), confirm=True)
         self.assertEqual(session.sent, [])

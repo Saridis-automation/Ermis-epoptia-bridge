@@ -73,12 +73,23 @@ def parse_workflow(text):
                 files=data.get("files") or [], element_files=data.get("elementsFiles") or [])
 
 
+def attached_custom_fields(text):
+    """{custom_field_id: {element_id: settings}} attached to the workflow (#tmpWorkflowElementsCustomFields).
+
+    Every workflow page lists the whole custom-field catalogue with add/remove buttons, so those
+    buttons say nothing; this element holds what is actually attached (e.g. 39: fields 6-12, all
+    is_show=1). Empty list/dict = none attached.
+    """
+    match = re.search(r'id="tmpWorkflowElementsCustomFields"[^>]*>(.*?)</', text, re.S)
+    if not match:
+        raise WriteError("custom-field data not found on the workflow page")
+    value = html.unescape(match.group(1)).strip()
+    data = json.loads(value) if value else {}
+    return data if isinstance(data, dict) else {}
+
+
 def has_custom_field_settings(text):
-    """True if custom fields are attached to the workflow or configured per step."""
-    if "customFieldRemove" in text:
-        return True
-    match = re.search(r'id="tmpWorkflowElementsCustomFields"[^>]*>(.*?)<', text, re.S)
-    return bool(match and html.unescape(match.group(1)).strip() not in ("", "{}", "[]"))
+    return bool(attached_custom_fields(text))
 
 
 def signature(graph):
