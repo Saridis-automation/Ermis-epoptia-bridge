@@ -80,6 +80,17 @@ WORKSTATION_DELETE = FormSpec(
     "/workstations", "workstationDeleteForm", "POST", "/workstations/destroy/0",
     (("_method", "hidden", False), ("_token", "hidden", False)))
 
+TAG_CREATE = FormSpec(
+    "/tags", "tagsCreateForm", "POST", "/tags/store",
+    (("_token", "hidden", False), ("section[]", "checkbox", False), ("name", "text", True)))
+WORKSTATION_CREATE = FormSpec(
+    "/workstations", "addNewWorkstationForm", "POST", "/workstations/store",
+    (("_token", "hidden", False), ("name", "text", True), ("workstation_code", "text", False),
+     ("workstationTags[]", "select", False), ("max_works", "number", False), ("folder_id", "select", False),
+     ("cost_per_hour", "number", False), ("tracking_info", "checkbox", False), ("group_by_value", "radio", False),
+     ("info_button_visible", "checkbox", False), ("create_not_unique_tasks", "checkbox", False)),
+    radio_values=(("group_by_value", ("group_by_default", "group_by")),))
+
 MODES = {"strict": (1, 0, 0), "semi": (0, 1, 0), "free": (0, 0, 1)}
 
 
@@ -700,3 +711,56 @@ class WorkflowWriter:
         if result["sent"]:
             result["verified"] = int(ws_id) not in self.workstations()
         return result
+
+    def create_tag(self, name, *, section="workflow_elements", confirm=False):
+        """New job tag; SARIDIS job tags are in section workflow_elements (used on workflow steps)."""
+        action = "create_tag"
+        _clean_text(name, 50)
+        if any(t["name"] == name for t in self.tags().values()):
+            raise WriteError(f"a tag named {name!r} already exists")
+        parser, text = self.w._get_page("/tags")
+        problems = self.w._check_form(parser, TAG_CREATE)
+        if f'value="{section}"' not in text:
+            problems.append(f"section {section!r} no longer offered")
+        self.w.log(action, "form_check", page=TAG_CREATE.page, ok=not problems, problems=problems)
+        if problems:
+            raise FormChanged("; ".join(problems))
+        payload = {"_token": parser.forms[TAG_CREATE.form_id]["token"], "section[]": [section], "name": name}
+        preview = {"method": "POST", "path": TAG_CREATE.action, "payload": _redact(payload)}
+        if not confirm:
+            self.w.log(action, "preview", **preview)
+            return {"sent": False, **preview}
+        response, _ = self.w._send(action, TAG_CREATE.action, form=payload)
+        if response.status_code not in (200, 302) or self.w._same_origin_path(response.headers.get("Location")) == "/login":
+            raise WriteError(f"{TAG_CREATE.action} answered HTTP {response.status_code}")
+        found = [t for t in self.tags().values() if t["name"] == name]
+        ok = len(found) == 1 and found[0].get("section") == section
+        self.w.log(action, "verified" if ok else "unverified", found=[t["id"] for t in found])
+        return {"sent": True, "verified": ok, "id": found[0]["id"] if len(found) == 1 else None}
+
+    def create_workstation(self, name, *, max_works=100, confirm=False):
+        """New workstation with the SARIDIS defaults (time measurement, not grouped, no tags/cost/folder)."""
+        action = "create_workstation"
+        _clean_text(name, 100)
+        if any(r["name"] == name for r in self.workstations().values()):
+            raise WriteError(f"a workstation named {name!r} already exists")
+        parser, _ = self.w._get_page("/workstations")
+        problems = self.w._check_form(parser, WORKSTATION_CREATE)
+        self.w.log(action, "form_check", page=WORKSTATION_CREATE.page, ok=not problems, problems=problems)
+        if problems:
+            raise FormChanged("; ".join(problems))
+        payload = {"_token": parser.forms[WORKSTATION_CREATE.form_id]["token"], "name": name, "workstation_code": "",
+                   "max_works": str(int(max_works)), "folder_id": "", "cost_per_hour": "",
+                   "group_by_value": "group_by_default"}
+        preview = {"method": "POST", "path": WORKSTATION_CREATE.action, "payload": _redact(payload)}
+        if not confirm:
+            self.w.log(action, "preview", **preview)
+            return {"sent": False, **preview}
+        response, _ = self.w._send(action, WORKSTATION_CREATE.action, form=payload)
+        if response.status_code not in (200, 302) or self.w._same_origin_path(response.headers.get("Location")) == "/login":
+            raise WriteError(f"{WORKSTATION_CREATE.action} answered HTTP {response.status_code}")
+        found = [r for r in self.workstations().values() if r["name"] == name]
+        ok = (len(found) == 1 and found[0].get("max_works") == int(max_works) and not found[0].get("only_tracking")
+              and not found[0].get("grouped") and found[0].get("is_active") == 1)
+        self.w.log(action, "verified" if ok else "unverified", found=[r["id"] for r in found])
+        return {"sent": True, "verified": ok, "id": found[0]["id"] if len(found) == 1 else None}

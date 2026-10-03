@@ -361,6 +361,32 @@ class UpdateFlowTests(unittest.TestCase):
         self.assertNotIn("tracking_info", data)
         self.assertTrue(result["verified"])
 
+    def test_create_tag_and_workstation_with_saridis_defaults(self):
+        tag_form = f"""<form action="{BASE}/tags/store" id="tagsCreateForm" method="post">
+<input type="hidden" name="_token" value="TOKT"><input type="checkbox" name="section[]" value="workflow_elements">
+<input type="text" name="name" required></form>"""
+        led = '<div class="deleteTagInfo d-none">' + html.escape(json.dumps({"id": 27, "name": "LED", "section": "workflow_elements"})) + '</div>'
+        session = Session({"/tags": [Response(""), Response(tag_form), Response(led)]},
+                          [Response(status=302, location=BASE + "/tags")])
+        result = self.writer(session).create_tag("LED", confirm=True)
+        self.assertEqual(session.sent[0][1]["data"]["section[]"], ["workflow_elements"])
+        self.assertEqual((result["id"], result["verified"]), (27, True))
+        ws_form = f"""<form id="addNewWorkstationForm" action="{BASE}/workstations/store" method="post">
+<input type="hidden" name="_token" value="TOKW"><input type="text" name="name" required><input type="text" name="workstation_code">
+<select name="workstationTags[]" multiple></select><input type="number" name="max_works">
+<select name="folder_id"></select><input type="number" name="cost_per_hour"><input type="checkbox" name="tracking_info">
+<input type="radio" name="group_by_value" value="group_by_default" checked><input type="radio" name="group_by_value" value="group_by">
+<input type="checkbox" name="info_button_visible"><input type="checkbox" name="create_not_unique_tasks"></form>"""
+        info = {"id": 32, "name": "ΗΛΕΚΤΡΟΛΟΓΟΣ", "max_works": 100, "only_tracking": 0, "grouped": 0, "is_active": 1}
+        listing = '<div class="workstationInfo d-none">' + html.escape(json.dumps(info)) + '</div>'
+        session = Session({"/workstations": [Response(""), Response(ws_form), Response(listing)]},
+                          [Response(status=302, location=BASE + "/workstations")])
+        result = self.writer(session).create_workstation("ΗΛΕΚΤΡΟΛΟΓΟΣ", confirm=True)
+        data = session.sent[0][1]["data"]
+        self.assertEqual((data["name"], data["max_works"], data["group_by_value"]), ("ΗΛΕΚΤΡΟΛΟΓΟΣ", "100", "group_by_default"))
+        self.assertNotIn("tracking_info", data)
+        self.assertEqual((result["id"], result["verified"]), (32, True))
+
     def test_refuses_stale_base_and_files(self):
         base = wf.parse_workflow(page())
         stale = dict(wf.signature(base), links=[])
