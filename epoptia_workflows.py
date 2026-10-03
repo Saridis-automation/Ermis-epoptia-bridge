@@ -163,7 +163,9 @@ def build_workflow_data(graph):
     return out
 
 
-def validate_graph(graph):
+def validate_graph(graph, current=None):
+    """`current` (the saved graph) lets saved steps keep an empty tag when they are not changed:
+    some SARIDIS templates have untagged steps; only new or changed steps must carry a tag."""
     if not graph["links"]:
         raise WriteError("a workflow needs at least one link (unlinked steps are not saved)")
     linked = {l["parent"] for l in graph["links"]} | {l["child"] for l in graph["links"]}
@@ -171,7 +173,11 @@ def validate_graph(graph):
         if key not in linked:
             raise WriteError(f"step {key} has no link and would be dropped")
         if not str(n.get("tag")) or not n.get("tag_id"):
-            raise WriteError(f"step {key} ({n.get('workstation')}) needs a job tag")
+            old = (current or {}).get("nodes", {}).get(key)
+            unchanged = old is not None and all(old.get(f) == n.get(f) for f in
+                                                ("workstation_id", "tag", "tag_id", "mode", "is_or"))
+            if not unchanged:
+                raise WriteError(f"step {key} ({n.get('workstation')}) needs a job tag")
         if n.get("mode") not in MODES:
             raise WriteError(f"step {key}: mode must be strict, semi or free")
         if type(n.get("workstation_id")) is not int:
@@ -307,7 +313,6 @@ class WorkflowWriter:
                custom_fields="keep", confirm=False, _wol=None):
         """Replace the graph of a workflow; `expected_current` = signature() the caller based it on."""
         action = "update_workflow" if _wol is None else "update_wol_workflow"
-        validate_graph(graph)
         if _wol is None:
             parser, text, current = self.read(workflow_id)
             page = WORKFLOW_UPDATE.page.format(id=workflow_id)
@@ -317,6 +322,7 @@ class WorkflowWriter:
             parser, text = self.w._get_page(page)
             current = parse_workflow(text)
             fields = WORKFLOW_UPDATE.fields + (("workorderLine", "hidden", False),)
+        validate_graph(graph, current)
         spec = FormSpec(page, WORKFLOW_UPDATE.form_id, WORKFLOW_UPDATE.method,
                         WORKFLOW_UPDATE.action.format(id=workflow_id), fields)
         problems = self.w._check_form(parser, spec)

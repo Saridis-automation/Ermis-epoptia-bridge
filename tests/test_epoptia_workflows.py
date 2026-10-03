@@ -101,6 +101,15 @@ class GraphTests(unittest.TestCase):
     def test_mandatory_flags(self):
         self.assertEqual(wf.mandatory_flags(page()), {"6": True})
 
+    def test_saved_untagged_step_may_stay_untagged_but_not_change(self):
+        g = wf.linear_graph([(28, "ΚΟΠΗ", "ΚΟΠΗ ΨΑΛΙΔΙ", 6), (3, "ΣΤΡΑΤΖΑ", "ΣΤΡΑΤΖΑ", 23)])
+        g["nodes"]["new2"].update(tag="", tag_id="", node_id=55)
+        current = json.loads(json.dumps(g))
+        wf.validate_graph(g, current)                                  # unchanged: allowed
+        g["nodes"]["new2"]["workstation_id"] = 2
+        with self.assertRaises(WriteError):
+            wf.validate_graph(g, current)                              # changed without tag
+
     def test_custom_field_detection(self):
         self.assertFalse(wf.has_custom_field_settings(page()))           # catalogue buttons only
         attached = html.escape(json.dumps({"6": {"1": {"is_show": 1}}}))
