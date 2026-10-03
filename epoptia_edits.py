@@ -91,7 +91,9 @@ class Editor:
     def _ajax(self, action, path, body, token):
         headers = {"Accept": "application/json", "X-Requested-With": "XMLHttpRequest", "X-CSRF-TOKEN": token}
         response, parsed = self.w._send(action, path, json_body=dict(body, _token=token), headers=headers)
-        if response.status_code != 200:
+        location = self.w._same_origin_path(response.headers.get("Location"))
+        # Epoptia answers some saves with a redirect even for AJAX; the browser follows it.
+        if response.status_code not in (200, 302) or location == "/login":
             raise WriteError(f"{path} answered HTTP {response.status_code}")
         return parsed
 
