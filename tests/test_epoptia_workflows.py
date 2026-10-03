@@ -336,6 +336,31 @@ class UpdateFlowTests(unittest.TestCase):
             self.writer(session).rename_tag(15, "Άλλο όνομα", "ΣΧΕΔΙΟ", confirm=True)
         self.assertEqual(session.sent, [])
 
+    def test_rename_workstation_resends_current_settings(self):
+        def listing(name):
+            info = {"id": 1, "name": name, "max_works": 100, "folder_id": None, "cost_per_hour": None,
+                    "only_tracking": 0, "grouped": 0, "not_unique_tasks": 0, "info_button_visible": None,
+                    "remote_code": None, "is_active": 1, "tags": [{"id": 25}]}
+            return ('<div class="workstationInfo d-none">' + html.escape(json.dumps(info)) + '</div>' + f"""
+<form id="workstationForm" action="" method="post"><input type="hidden" name="_method" value="PUT">
+<input type="hidden" name="_token" value="TOKW"><input type="text" name="name"><input type="text" name="workstation_code">
+<select name="workstationTags[]" multiple></select><input type="number" name="max_works">
+<select name="folder_id"><option value=""></option></select><input type="number" name="cost_per_hour">
+<input type="checkbox" name="tracking_info"><input type="radio" name="group_by_value" value="group_by_default">
+<input type="radio" name="group_by_value" value="group_by"><input name="info_button_visible" type="checkbox" value="1">
+<input type="checkbox" name="edit_not_unique_tasks"></form>
+<script>$("#workstationForm").attr("action", "/workstations/update/"+workstation.id);</script>""")
+        session = Session({"/workstations": [Response(listing("ΕΙΣΑΓΩΓΗ ΠΑΡΑΓΓΕΛΙΑΣ")), Response(listing("ADMIN"))]},
+                          [Response(status=302, location=BASE + "/workstations")])
+        result = self.writer(session).rename_workstation(1, "ΕΙΣΑΓΩΓΗ ΠΑΡΑΓΓΕΛΙΑΣ", "ADMIN", confirm=True)
+        path, kw = session.sent[0]
+        self.assertEqual(path, "/workstations/update/1")
+        data = kw["data"]
+        self.assertEqual((data["name"], data["max_works"], data["workstationTags[]"], data["group_by_value"]),
+                         ("ADMIN", "100", ["25"], "group_by_default"))
+        self.assertNotIn("tracking_info", data)
+        self.assertTrue(result["verified"])
+
     def test_refuses_stale_base_and_files(self):
         base = wf.parse_workflow(page())
         stale = dict(wf.signature(base), links=[])

@@ -69,6 +69,17 @@ TAG_UPDATE = FormSpec(
     (("_method", "hidden", False), ("_token", "hidden", False), ("section[]", "checkbox", False),
      ("name", "text", True), ("section", "hidden", False)))
 
+WORKSTATION_UPDATE = FormSpec(
+    "/workstations", "workstationForm", "POST", None,
+    (("_method", "hidden", False), ("_token", "hidden", False), ("name", "text", False),
+     ("workstation_code", "text", False), ("workstationTags[]", "select", False), ("max_works", "number", False),
+     ("folder_id", "select", False), ("cost_per_hour", "number", False), ("tracking_info", "checkbox", False),
+     ("group_by_value", "radio", False), ("info_button_visible", "checkbox", False),
+     ("edit_not_unique_tasks", "checkbox", False)))
+WORKSTATION_DELETE = FormSpec(
+    "/workstations", "workstationDeleteForm", "POST", "/workstations/destroy/0",
+    (("_method", "hidden", False), ("_token", "hidden", False)))
+
 MODES = {"strict": (1, 0, 0), "semi": (0, 1, 0), "free": (0, 0, 1)}
 
 
@@ -610,3 +621,82 @@ class WorkflowWriter:
         ok = after.get("name") == new_name and after.get("section") == tag["section"]
         self.w.log(action, "verified" if ok else "unverified", tag=int(tag_id), after=after.get("name"))
         return {"sent": True, "verified": ok, "after": after}
+
+    # -- workstations ("στάδια παραγωγής") --------------------------------------
+    # /workstations page: #workstationForm (PUT /workstations/update/{id}; the page script sets the
+    # action) posts ALL settings, so a rename re-sends the station's current values unchanged.
+    def workstations(self):
+        _, text = self.w._get_page("/workstations?per_page=100")
+        found = {}
+        for blob in re.findall(r'<div class="workstationInfo d-none">(.*?)</div>', text, re.S):
+            record = json.loads(html.unescape(blob))
+            found[record["id"]] = record
+        return found
+
+    def rename_workstation(self, ws_id, expected_name, new_name, *, confirm=False):
+        action = "rename_workstation"
+        _clean_text(new_name, 100)
+        parser, text = self.w._get_page("/workstations?per_page=100")
+        current = {}
+        for blob in re.findall(r'<div class="workstationInfo d-none">(.*?)</div>', text, re.S):
+            record = json.loads(html.unescape(blob))
+            current[record["id"]] = record
+        ws = current.get(int(ws_id))
+        if ws is None or ws["name"] != expected_name:
+            raise WriteError(f"workstation {ws_id} is {ws and ws['name']!r}, not {expected_name!r}")
+        if any(r["name"] == new_name for r in current.values()):
+            raise WriteError(f"a workstation named {new_name!r} already exists")
+        problems = [p for p in self.w._check_form(parser, WORKSTATION_UPDATE) if not p.startswith("action ")]
+        form = parser.forms.get(WORKSTATION_UPDATE.form_id) or {}
+        if str(form.get("method_override", "")).upper() != "PUT":
+            problems.append("workstation form lost _method=PUT")
+        if '"/workstations/update/"+workstation.id' not in text:
+            problems.append("page script no longer sets /workstations/update/{id}")
+        self.w.log(action, "form_check", page="/workstations", ok=not problems, problems=problems)
+        if problems:
+            raise FormChanged("; ".join(problems))
+        payload = {"_method": "PUT", "_token": form["token"], "name": new_name,
+                   "workstation_code": ws.get("remote_code") or "",
+                   "max_works": "" if ws.get("max_works") is None else str(ws["max_works"]),
+                   "folder_id": "" if ws.get("folder_id") is None else str(ws["folder_id"]),
+                   "cost_per_hour": "" if ws.get("cost_per_hour") is None else str(ws["cost_per_hour"]),
+                   "group_by_value": "group_by" if ws.get("grouped") else "group_by_default"}
+        tags = [str(t["id"]) for t in ws.get("tags") or []]
+        if tags:
+            payload["workstationTags[]"] = tags
+        if ws.get("only_tracking"):
+            payload["tracking_info"] = "on"
+        if ws.get("info_button_visible") == 1:
+            payload["info_button_visible"] = "1"
+        if ws.get("not_unique_tasks"):
+            payload["edit_not_unique_tasks"] = "on"
+        path = f"/workstations/update/{int(ws_id)}"
+        preview = {"method": "POST", "path": path, "payload": _redact(payload),
+                   "target": {"workstation": int(ws_id), "from": expected_name, "to": new_name}}
+        if not confirm:
+            self.w.log(action, "preview", **preview)
+            return {"sent": False, **preview}
+        response, _ = self.w._send(action, path, form=payload)
+        if response.status_code not in (200, 302) or self.w._same_origin_path(response.headers.get("Location")) == "/login":
+            raise WriteError(f"{path} answered HTTP {response.status_code}")
+        after = self.workstations().get(int(ws_id)) or {}
+        kept = ("max_works", "folder_id", "cost_per_hour", "only_tracking", "grouped", "not_unique_tasks",
+                "info_button_visible", "remote_code", "is_active")
+        changed = [k for k in kept if after.get(k) != ws.get(k)]
+        if [t["id"] for t in after.get("tags") or []] != [t["id"] for t in ws.get("tags") or []]:
+            changed.append("tags")
+        ok = after.get("name") == new_name and not changed
+        self.w.log(action, "verified" if ok else "unverified", workstation=int(ws_id), changed=changed)
+        return {"sent": True, "verified": ok, "changed_settings": changed, "after": after}
+
+    def delete_workstation(self, ws_id, expected_name, *, confirm=False):
+        ws = self.workstations().get(int(ws_id))
+        if ws is None or ws["name"] != expected_name:
+            raise WriteError(f"workstation {ws_id} is {ws and ws['name']!r}, not {expected_name!r}")
+        parser, _ = self.w._get_page("/workstations")
+        result = self.w._delete("delete_workstation", WORKSTATION_DELETE, parser,
+                                f"/workstations/destroy/{int(ws_id)}",
+                                {"workstation": int(ws_id), "name": expected_name}, confirm=confirm)
+        if result["sent"]:
+            result["verified"] = int(ws_id) not in self.workstations()
+        return result

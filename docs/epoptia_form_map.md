@@ -265,3 +265,13 @@
   Αλλάζει το όνομα παντού (ροές, γραμμές σε παραγωγή, ιστορικό). Εργαλείο: `WorkflowWriter.rename_tag()`.
 - Νέα ετικέτα: `#tagsCreateForm` → `POST /tags/store` (δεν έχει χρησιμοποιηθεί ακόμα).
 - 2026-10-03: η ετικέτα 15 «ΣΧΕΔΙΟ (ΘΑΝΑΣΗΣ)» μετονομάστηκε σε «ΣΧΕΔΙΟ» (απόφαση χρήστη).
+
+## Σταθμοί (workstations) (2026-10-03)
+- Λίστα: `GET /workstations?per_page=100` → `<div class="workstationInfo">` JSON (όλες οι ρυθμίσεις + tags).
+- Επεξεργασία: `#workstationForm` → `POST /workstations/update/{id}` (`_method=PUT`), στέλνει ΟΛΕΣ τις ρυθμίσεις
+  (`name, workstation_code, workstationTags[], max_works, folder_id, cost_per_hour, tracking_info, group_by_value,
+  info_button_visible, edit_not_unique_tasks`). `rename_workstation()` ξαναστέλνει τις τρέχουσες τιμές και ελέγχει μετά ότι δεν άλλαξαν.
+- Διαγραφή: `#workstationDeleteForm` → `POST /workstations/destroy/{id}` (`_method=DELETE`), `delete_workstation()`.
+- Νέος σταθμός: `#addNewWorkstationForm` → `POST /workstations/store` (δεν έχει χρησιμοποιηθεί ακόμα).
+- 2026-10-03 (απόφαση χρήστη): σβήστηκε ο αχρησιμοποίητος σταθμός 30 «ADMIN»· ο σταθμός 1 «ΕΙΣΑΓΩΓΗ ΠΑΡΑΓΓΕΛΙΑΣ»
+  μετονομάστηκε σε «ADMIN»· η ετικέτα 25 «ADMIN» μετονομάστηκε σε «ΕΓΚΡΙΣΗ ΠΑΡΑΓΓΕΛΙΑΣ».
