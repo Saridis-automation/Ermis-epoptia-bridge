@@ -64,6 +64,11 @@ CUSTOM_FIELD_DELETE = FormSpec(
     "/customfields", "customfieldDeleteForm", "POST", "/customfields/destroy/0",
     (("_method", "hidden", False), ("_token", "hidden", False)))
 
+TAG_UPDATE = FormSpec(
+    "/tags", "tagForm", "POST", "/tags/update/0",
+    (("_method", "hidden", False), ("_token", "hidden", False), ("section[]", "checkbox", False),
+     ("name", "text", True), ("section", "hidden", False)))
+
 MODES = {"strict": (1, 0, 0), "semi": (0, 1, 0), "free": (0, 0, 1)}
 
 
@@ -560,3 +565,48 @@ class WorkflowWriter:
         if result["sent"]:
             result["verified"] = not any(f[0] == int(field_id) for f in self.find_custom_fields(expected_name))
         return result
+
+    # -- job tags ("ετικέτες") --------------------------------------------------
+    # /tags page: #tagForm (PUT /tags/update/{id}; the page script swaps the id), fields
+    # name + hidden section (the tag's category; the section[] checkboxes are disabled = not posted).
+    # A rename changes the tag everywhere: templates, running lines and history show the new name.
+    def tags(self):
+        """{id: record} of active tags (all pages listed at once)."""
+        _, text = self.w._get_page("/tags?per_page=100")
+        found = {}
+        for blob in re.findall(r'<div class="deleteTagInfo d-none">(.*?)</div>', text, re.S):
+            record = json.loads(html.unescape(blob))
+            found[record["id"]] = record
+        return found
+
+    def rename_tag(self, tag_id, expected_name, new_name, *, confirm=False):
+        action = "rename_tag"
+        _clean_text(new_name, 50)
+        current = self.tags()
+        tag = current.get(int(tag_id))
+        if tag is None or tag["name"] != expected_name:
+            raise WriteError(f"tag {tag_id} is {tag and tag['name']!r}, not {expected_name!r}")
+        if any(t["name"] == new_name for t in current.values()):
+            raise WriteError(f"a tag named {new_name!r} already exists")
+        parser, _ = self.w._get_page("/tags")
+        problems = self.w._check_form(parser, TAG_UPDATE)
+        form = parser.forms.get(TAG_UPDATE.form_id) or {}
+        if str(form.get("method_override", "")).upper() != "PUT":
+            problems.append("tag form lost _method=PUT")
+        self.w.log(action, "form_check", page=TAG_UPDATE.page, ok=not problems, problems=problems)
+        if problems:
+            raise FormChanged("; ".join(problems))
+        path = f"/tags/update/{int(tag_id)}"
+        payload = {"_method": "PUT", "_token": form["token"], "name": new_name, "section": tag["section"]}
+        preview = {"method": "POST", "path": path, "payload": _redact(payload),
+                   "target": {"tag": int(tag_id), "from": expected_name, "to": new_name}}
+        if not confirm:
+            self.w.log(action, "preview", **preview)
+            return {"sent": False, **preview}
+        response, _ = self.w._send(action, path, form=payload)
+        if response.status_code not in (200, 302) or self.w._same_origin_path(response.headers.get("Location")) == "/login":
+            raise WriteError(f"{path} answered HTTP {response.status_code}")
+        after = self.tags().get(int(tag_id)) or {}
+        ok = after.get("name") == new_name and after.get("section") == tag["section"]
+        self.w.log(action, "verified" if ok else "unverified", tag=int(tag_id), after=after.get("name"))
+        return {"sent": True, "verified": ok, "after": after}

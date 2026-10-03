@@ -315,6 +315,27 @@ class UpdateFlowTests(unittest.TestCase):
             self.writer(session).create_custom_field("Χ", confirm=True)
         self.assertEqual(session.sent, [])
 
+    def test_rename_tag_keeps_section_and_verifies(self):
+        def listing(name):
+            info = {"id": 15, "name": name, "section": "workflow_elements"}
+            return '<div class="deleteTagInfo d-none">' + html.escape(json.dumps(info)) + '</div>'
+        form = f"""<form id="tagForm" action="{BASE}/tags/update/0" method="post">
+<input type="hidden" name="_method" value="PUT"><input type="hidden" name="_token" value="TOKT">
+<input type="checkbox" name="section[]" value="workstations" disabled><input type="text" name="name" required>
+<input type="hidden" name="section"></form>"""
+        session = Session({"/tags": [Response(listing("ΣΧΕΔΙΟ (ΘΑΝΑΣΗΣ)")), Response(form), Response(listing("ΣΧΕΔΙΟ"))]},
+                          [Response(status=302, location=BASE + "/tags")])
+        result = self.writer(session).rename_tag(15, "ΣΧΕΔΙΟ (ΘΑΝΑΣΗΣ)", "ΣΧΕΔΙΟ", confirm=True)
+        path, kw = session.sent[0]
+        self.assertEqual(path, "/tags/update/15")
+        self.assertEqual((kw["data"]["name"], kw["data"]["section"], kw["data"]["_method"]),
+                         ("ΣΧΕΔΙΟ", "workflow_elements", "PUT"))
+        self.assertTrue(result["verified"])
+        session = Session({"/tags": [Response(listing("ΣΧΕΔΙΟ (ΘΑΝΑΣΗΣ)"))]})
+        with self.assertRaises(WriteError):
+            self.writer(session).rename_tag(15, "Άλλο όνομα", "ΣΧΕΔΙΟ", confirm=True)
+        self.assertEqual(session.sent, [])
+
     def test_refuses_stale_base_and_files(self):
         base = wf.parse_workflow(page())
         stale = dict(wf.signature(base), links=[])
