@@ -303,6 +303,27 @@ def backup_similar_products(name, db_path=Path.home() / "epoptia-backup" / "epop
     return [(i, n) for i, n in rows if n and name_key(n) == key]
 
 
+def is_cancelled_workflow(name):
+    """SARIDIS marks retired workflow templates with 'ΑΚΥΡΟ' in the name (e.g. 41, 8)."""
+    return "ΑΚΥΡΟ" in name_key(name or "").replace("AKYPO", "ΑΚΥΡΟ") or "AKYPO" in name_key(name or "")
+
+
+def backup_product_workflows(product_ids, db_path=Path.home() / "epoptia-backup" / "epoptia.sqlite"):
+    """{product_id: (workflow_id, workflow_name)} from the nightly backup (no Epoptia request)."""
+    import sqlite3
+    if not Path(db_path).exists():
+        return None
+    with sqlite3.connect(db_path) as db:
+        names = {i: json.loads(d).get("name") for i, d in db.execute("SELECT id, data FROM records WHERE kind='workflow'")}
+        out = {}
+        for pid in product_ids:
+            row = db.execute("SELECT data FROM records WHERE kind='product' AND id=?", (int(pid),)).fetchone()
+            if row:
+                wid = json.loads(row[0]).get("workflow_id")
+                out[int(pid)] = (wid, names.get(wid))
+    return out
+
+
 class WebWriter:
     """One authenticated Epoptia web session used only for reviewed writes."""
 
@@ -522,6 +543,8 @@ class WebWriter:
         templates = self.workflow_templates()
         if template_id not in templates:
             raise WriteError(f"workflow template {template_id} not offered")
+        if is_cancelled_workflow(templates[template_id]):
+            raise WriteError(f"workflow {template_id} '{templates[template_id]}' is cancelled (ΑΚΥΡΟ); use its v.2")
         spec = PRODUCT_ASSIGN_WORKFLOW
         page = spec.page.format(id=product_id)
         parser, text = self._get_page(page)
@@ -772,6 +795,18 @@ class WebWriter:
                         "customFieldsValues": self._custom_fields(line.get("customFields", {}), index),
                         "wolCode": _clean_text(line.get("wolCode", ""), 255, allow_empty=True),
                         "bomValues": {}})
+        flows = backup_product_workflows([l["product"] for l in wol]) or {}
+        cancelled = []
+        for i, l in enumerate(wol, 1):
+            if l["product"] in flows and is_cancelled_workflow(flows[l["product"]][1]):
+                # the backup may be a day old: confirm on the live product page before refusing
+                _, page = self._get_page(f"/products/{int(l['product'])}")
+                live = re.findall(r"/product/%d/workflow/(\d+)" % int(l["product"]), page)
+                if live and int(live[0]) == flows[l["product"]][0]:
+                    cancelled.append((i, l["product"], flows[l["product"]][1]))
+        if cancelled:
+            raise WriteError("lines use products on a cancelled (ΑΚΥΡΟ) workflow - move them to the v.2 first: "
+                             + "; ".join(f"line {i}: product {p} -> {n}" for i, p, n in cancelled))
         for index, line in enumerate(wol, 1):
             if line["customFieldsValues"]:
                 known = self.product_custom_field_ids(line["product"])

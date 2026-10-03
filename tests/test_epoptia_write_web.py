@@ -117,6 +117,9 @@ class WebWriterTest(unittest.TestCase):
         original = w.backup_similar_products
         w.backup_similar_products = lambda name: original(name, self.db_path)
         self.addCleanup(setattr, w, "backup_similar_products", original)
+        flows = w.backup_product_workflows
+        w.backup_product_workflows = lambda ids: {}
+        self.addCleanup(setattr, w, "backup_product_workflows", flows)
 
     def writer(self, session):
         return w.WebWriter(BASE, "u", "p", session=session, login=lambda *a: True,
@@ -365,6 +368,22 @@ class WebWriterTest(unittest.TestCase):
         with self.assertRaises(w.PartialWorkorder):
             self.writer(session).create_workorder(**self.workorder_args(), confirm=True)
         self.assertEqual([r["phase"] for r in self.log()][-2:], ["error", "partial_workorder"])
+
+    def test_cancelled_workflow_guards(self):
+        original = w.backup_product_workflows
+        w.backup_product_workflows = lambda ids: {900: (41, "ΨΥΓΕΙΟ ΒΙΤΡΙΝΑ ΜΕ ΑΠΟΘΗΚΗ ΑΚΥΡΟ")}
+        self.addCleanup(setattr, w, "backup_product_workflows", original)
+        session = FakeSession({"/products/900": [Response(text=f'<a href="{BASE}/product/900/workflow/41">')]})
+        with self.assertRaises(w.WriteError):
+            self.writer(session).create_workorder(**self.workorder_args(), confirm=True)
+        self.assertEqual(session.sent, [])
+        # live page says it was moved to a v.2 since the backup: not refused
+        session = FakeSession({"/products/900": [Response(text=f'<a href="{BASE}/product/900/workflow/39">')],
+                               "/workorders/create": [Response(text=WORKORDER_PAGE)]})
+        self.assertFalse(self.writer(session).create_workorder(**self.workorder_args())["sent"])
+        wl = Response(text='<select id="workflow_all"><option value="41">ΨΥΓΕΙΟ ΑΚΥΡΟ</option></select>')
+        with self.assertRaises(w.WriteError):
+            self.writer(FakeSession({"/product/create": [wl]})).assign_workflow(1500, 41)
 
     def test_missing_script_marker_stops(self):
         page = WORKORDER_PAGE.replace("workorderlines/store", "workorderlines/save")
