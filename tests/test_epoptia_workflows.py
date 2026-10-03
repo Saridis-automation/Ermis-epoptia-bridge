@@ -110,6 +110,17 @@ class GraphTests(unittest.TestCase):
         with self.assertRaises(WriteError):
             wf.validate_graph(g, current)                              # changed without tag
 
+    def test_station_change_becomes_new_step_with_relinked_edges(self):
+        current = wf.parse_workflow(page())
+        g = json.loads(json.dumps(current))
+        g["nodes"] = {int(k): v for k, v in g["nodes"].items()}
+        g["nodes"][2].update(workstation_id=2, workstation="LASER")
+        out = wf.replace_changed_stations(g, current)
+        self.assertNotIn(2, out["nodes"])
+        self.assertEqual(out["nodes"]["swap2"]["node_id"], 0)
+        self.assertEqual({(l["parent"], l["child"], l["link_id"]) for l in out["links"]},
+                         {(1, "swap2", 0), ("swap2", 3, 0)})
+
     def test_custom_field_detection(self):
         self.assertFalse(wf.has_custom_field_settings(page()))           # catalogue buttons only
         attached = html.escape(json.dumps({"6": {"1": {"is_show": 1}}}))

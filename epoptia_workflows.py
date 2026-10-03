@@ -184,6 +184,26 @@ def validate_graph(graph, current=None):
             raise WriteError(f"step {key}: workstation_id must be an integer")
 
 
+def replace_changed_stations(graph, current):
+    """Epoptia keeps a saved step's workstation even if a new se_id is posted (verified
+    2026-10-03: only the tag changed). A station change is therefore a NEW step in the same
+    place, with the old step's links re-made as new links - what a user does on the page."""
+    nodes, links = dict(graph["nodes"]), [dict(l) for l in graph["links"]]
+    for key, node in list(nodes.items()):
+        old = current["nodes"].get(key)
+        if old is None or node.get("node_id") != old["node_id"] or node["workstation_id"] == old["workstation_id"]:
+            continue
+        new_key = f"swap{key}"
+        nodes[new_key] = dict(node, node_id=0)
+        del nodes[key]
+        for link in links:
+            if link["parent"] == key:
+                link.update(parent=new_key, link_id=0)
+            if link["child"] == key:
+                link.update(child=new_key, link_id=0)
+    return dict(graph, nodes=nodes, links=links)
+
+
 def linear_graph(steps):
     """Steps [(workstation_id, workstation, tag, tag_id), ...] -> new nodes linked in order."""
     nodes, links = {}, []
@@ -322,6 +342,11 @@ class WorkflowWriter:
             parser, text = self.w._get_page(page)
             current = parse_workflow(text)
             fields = WORKFLOW_UPDATE.fields + (("workorderLine", "hidden", False),)
+        locked_now = locked_steps(text, current) if _wol is not None else set()
+        swapped = [k for k in graph["nodes"] if k in current["nodes"] and k not in locked_now
+                   and graph["nodes"][k]["workstation_id"] != current["nodes"][k]["workstation_id"]]
+        if swapped:
+            graph = replace_changed_stations(graph, current)
         validate_graph(graph, current)
         spec = FormSpec(page, WORKFLOW_UPDATE.form_id, WORKFLOW_UPDATE.method,
                         WORKFLOW_UPDATE.action.format(id=workflow_id), fields)
