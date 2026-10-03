@@ -74,7 +74,10 @@ def order_state(text):
 
 def product_state(text, product_id):
     name = re.search(r"#%d \((.*?)\)</div>" % int(product_id), text)
-    return dict(name=html.unescape(name.group(1)) if name else None, comments=_textarea(text, "commentCom"))
+    fields = {i: html.unescape(v) for i, v in
+              re.findall(r'class="form-control customField" data-id="(\d+)" value="([^"]*)"', text)}
+    return dict(name=html.unescape(name.group(1)) if name else None, comments=_textarea(text, "commentCom"),
+                custom_fields=fields)
 
 
 class Editor:
@@ -222,10 +225,10 @@ class Editor:
 
     # -- product ------------------------------------------------------------------------
     def update_product(self, product_id, *, expected, changes, confirm=False):
-        """changes: name, comments."""
+        """changes: name, comments, custom_fields ({field_id: value}; all fields are re-sent)."""
         action = "edit_product"
-        if not changes or set(changes) - {"name", "comments"}:
-            raise WriteError("changes must be name and/or comments")
+        if not changes or set(changes) - {"name", "comments", "custom_fields"}:
+            raise WriteError("changes must be name, comments and/or custom_fields")
         page = f"/products/{int(product_id)}"
         _, text = self.w._get_page(page)
         current = product_state(text, product_id)
@@ -241,6 +244,12 @@ class Editor:
             plan.append(("form", update, {"_method": "PUT", "name": changes["name"]}))
         if "comments" in changes:
             plan.append(("ajax", update, {"comments": changes["comments"], "_method": "put"}))
+        if "custom_fields" in changes:
+            unknown = set(map(str, changes["custom_fields"])) - set(current["custom_fields"])
+            if unknown:
+                raise WriteError(f"product has no custom field(s) {sorted(unknown)}")
+            values = dict(current["custom_fields"], **{str(k): str(v) for k, v in changes["custom_fields"].items()})
+            plan.append(("ajax", "/product/customfields/values", {"productId": int(product_id), "customFields": values}))
         preview = {"product": int(product_id), "current": current, "requests": [(k, p, _redact(b)) for k, p, b in plan]}
         if not confirm:
             self.w.log(action, "preview", **preview)
@@ -250,6 +259,35 @@ class Editor:
             self._form(action, path, body, text) if kind == "form" else self._ajax(action, path, body, token)
         _, after_text = self.w._get_page(page)
         after = product_state(after_text, product_id)
-        ok = all(str(after.get(f)) == str(v) for f, v in changes.items())
+        ok = all(str(after.get(f)) == str(v) for f, v in changes.items() if f != "custom_fields")
+        if "custom_fields" in changes:
+            ok = ok and all(after["custom_fields"].get(str(k)) == str(v) for k, v in changes["custom_fields"].items())
         self.w.log(action, "verified" if ok else "unverified", after=after)
         return {"sent": True, "verified": ok, "after": after}
+
+
+def assign_workflow_keeping_values(writer, product_id, template_id, *, replace_from, confirm=False):
+    """Change a product's workflow and write its product-level custom-field values back
+    (Epoptia drops them on a workflow change). Refused if a field would not exist afterwards."""
+    editor = Editor(writer)
+    _, text = writer._get_page(f"/products/{int(product_id)}")
+    before = product_state(text, product_id)
+    saved = {k: v for k, v in before["custom_fields"].items() if v.strip()}
+    if not confirm:
+        preview = writer.assign_workflow(product_id, template_id, replace_from=replace_from, values_to_restore=saved)
+        return dict(preview, restore=saved)
+    result = writer.assign_workflow(product_id, template_id, replace_from=replace_from,
+                                    values_to_restore=saved, confirm=True)
+    if not result.get("assigned"):
+        return dict(result, restored=False, restore=saved)
+    if not saved:
+        return dict(result, restored=True, restore={})
+    _, after_text = writer._get_page(f"/products/{int(product_id)}")
+    now = product_state(after_text, product_id)["custom_fields"]
+    missing = sorted(set(saved) - set(now))
+    if missing:
+        writer.log("assign_workflow_keeping_values", "values_lost", product=int(product_id), missing=missing, values=saved)
+        raise WriteError(f"fields {missing} do not exist on the new workflow; values were: {saved}")
+    edit = editor.update_product(product_id, expected={"custom_fields": {k: now[k] for k in saved}},
+                                 changes={"custom_fields": saved}, confirm=True)
+    return dict(result, restored=edit["verified"], restore=saved)

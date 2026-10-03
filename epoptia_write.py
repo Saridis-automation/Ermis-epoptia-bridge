@@ -533,10 +533,12 @@ class WebWriter:
                 for v, n in re.findall(r'<option[^>]*value="(\d+)"[^>]*>(.*?)</option>', block, re.S)
                 if int(v) > 0}
 
-    def assign_workflow(self, product_id, template_id, *, confirm=False, replace_from=None):
+    def assign_workflow(self, product_id, template_id, *, confirm=False, replace_from=None, values_to_restore=None):
         """Give a product a workflow template. A product that already has one is refused unless
         replace_from = its current template id (the page warns that product settings are lost;
-        we additionally refuse if any product-level custom-field value is set)."""
+        we additionally refuse if any product-level custom-field value is set, unless the caller
+        passes exactly those values as values_to_restore and writes them back afterwards -
+        assign_workflow_keeping_values in epoptia_edits does that)."""
         action = "assign_workflow"
         if type(product_id) is not int or product_id < 1 or type(template_id) is not int or template_id < 1:
             raise WriteError("invalid product or template id")
@@ -559,7 +561,7 @@ class WebWriter:
                 if f"/product/{product_id}/workflow/{int(replace_from)}" not in text:
                     problems.append(f"product's current workflow is not {replace_from}")
                 saved = [(i, v) for i, v in re.findall(r'class="form-control customField" data-id="(\d+)" value="([^"]*)"', text) if v.strip()]
-                if saved:
+                if saved and dict(saved) != {str(k): v for k, v in (values_to_restore or {}).items()}:
                     problems.append(f"product has saved custom-field values that would be lost: {saved}")
         elif replace_from is not None:
             problems.append("product has no workflow; replace_from must not be given")

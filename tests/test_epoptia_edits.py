@@ -96,7 +96,37 @@ class EditTests(unittest.TestCase):
                  '<a role="button" href="https://x/clients/387">ERMIS-TEST</a><textarea id="commentCom">σχ</textarea>')
         self.assertEqual(e.order_state(order), {"completion_date": "31-12-2026", "comments": "σχ", "client_id": 387})
         product = '<div> / #1500 (ERMIS-TEST αλλαγές)</div><textarea id="commentCom"></textarea>'
-        self.assertEqual(e.product_state(product, 1500), {"name": "ERMIS-TEST αλλαγές", "comments": ""})
+        self.assertEqual(e.product_state(product, 1500), {"name": "ERMIS-TEST αλλαγές", "comments": "", "custom_fields": {}})
+
+    def test_product_custom_field_edit_resends_all_fields(self):
+        def page(dims):
+            return ('<meta name="csrf-token" content="META"><div> / #502 (Θάλαμος)</div><textarea id="commentCom"></textarea>'
+                    '<input type="text" class="form-control customField" data-id="6" value="-">'
+                    f'<input type="text" class="form-control customField" data-id="12" value="{dims}">')
+        session = Session({"/products/502": [Response(page("")), Response(page("140x70x205 cm"))]},
+                          [Response(body={"status": {"type": "success"}})])
+        result = self.editor(session).update_product(502, expected={"custom_fields": {"12": ""}},
+                                                     changes={"custom_fields": {"12": "140x70x205 cm"}}, confirm=True)
+        path, kw = session.sent[0]
+        self.assertEqual(path, "/product/customfields/values")
+        self.assertEqual(kw["json"]["customFields"], {"6": "-", "12": "140x70x205 cm"})
+        self.assertEqual(kw["json"]["productId"], 502)
+        self.assertTrue(result["verified"])
+
+    def test_assign_workflow_refuses_value_loss_unless_restoring_exactly_those_values(self):
+        from epoptia_write import FormChanged
+        page = ('<form id="X"></form><a href="/product/502/workflow/1476"></a>'
+                '<input type="text" class="form-control customField" data-id="12" value="140x70x205 cm">')
+        writer = WebWriter(BASE, "u", "p", session=None, login=lambda *a: True, log_path=self.log)
+        writer.workflow_templates = lambda: {1475: "ΘΑΛΑΜΟΣ ΨΥΓΕΙΟ v.2"}
+        writer._get_page = lambda path: (type("P", (), {"forms": {}, "all_forms": []})(), page)
+        writer._check_form = lambda parser, spec: []
+        with self.assertRaises(FormChanged) as caught:
+            writer.assign_workflow(502, 1475, replace_from=1476, values_to_restore={"12": "other"})
+        self.assertIn("would be lost", str(caught.exception))
+        with self.assertRaises(FormChanged) as caught:
+            writer.assign_workflow(502, 1475, replace_from=1476, values_to_restore={"12": "140x70x205 cm"})
+        self.assertNotIn("would be lost", str(caught.exception))   # only the (stubbed) sectionId check remains
 
 
 if __name__ == "__main__":
