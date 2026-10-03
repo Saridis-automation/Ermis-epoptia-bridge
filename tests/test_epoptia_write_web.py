@@ -271,6 +271,23 @@ class WebWriterTest(unittest.TestCase):
             self.writer(session).assign_workflow(1500, 999, confirm=True)
         self.assertEqual(session.sent, [])
 
+    def test_replace_workflow_needs_current_id_and_no_saved_values(self):
+        def page_with(values, current=41):
+            cf = "".join(f'<input type="text" class="form-control customField" data-id="{i}" value="{v}">' for i, v in values)
+            return Response(text=f"""<form id="assignFromTemplate" method="post" action="{BASE}/product/workflow/from-template">
+ <input type="hidden" name="_token" value="TOKENWF"><input type="hidden" name="sectionId" value="624" />
+ <input type="hidden" name="templateId" /></form><select id="templatePicker"></select>
+ <a href="{BASE}/product/624/workflow/{current}">{cf}""")
+        wl = Response(text='<select id="workflow_all"><option value="39">V2</option></select>')
+        for kwargs, values in (({}, [(12, "")]), ({"replace_from": 7}, [(12, "")]), ({"replace_from": 41}, [(12, "160x70")])):
+            session = FakeSession({"/product/create": [wl], "/products/624": [page_with(values)]})
+            with self.assertRaises(w.FormChanged):
+                self.writer(session).assign_workflow(624, 39, confirm=True, **kwargs)
+            self.assertEqual(session.sent, [])
+        session = FakeSession({"/product/create": [wl], "/products/624": [page_with([(12, "")])]})
+        preview = self.writer(session).assign_workflow(624, 39, replace_from=41)
+        self.assertEqual(preview["payload"]["templateId"], "39")
+
     def test_workorder_custom_fields_and_multiline_comments(self):
         args = self.workorder_args()
         args["lines"][0].update(comments="Α\n• Β", customFields={"12": "180x85x120 cm"})

@@ -512,8 +512,10 @@ class WebWriter:
                 for v, n in re.findall(r'<option[^>]*value="(\d+)"[^>]*>(.*?)</option>', block, re.S)
                 if int(v) > 0}
 
-    def assign_workflow(self, product_id, template_id, *, confirm=False):
-        """Give a product WITHOUT a workflow a copy of a workflow template."""
+    def assign_workflow(self, product_id, template_id, *, confirm=False, replace_from=None):
+        """Give a product a workflow template. A product that already has one is refused unless
+        replace_from = its current template id (the page warns that product settings are lost;
+        we additionally refuse if any product-level custom-field value is set)."""
         action = "assign_workflow"
         if type(product_id) is not int or product_id < 1 or type(template_id) is not int or template_id < 1:
             raise WriteError("invalid product or template id")
@@ -528,7 +530,16 @@ class WebWriter:
         if str((form.get("hidden_values") or {}).get("sectionId")) != str(product_id):
             problems.append("sectionId does not match the product")
         if 'id="templatePickerEmptyWorkflow"' not in text:
-            problems.append("product already has a workflow (would overwrite its settings)")
+            if replace_from is None:
+                problems.append("product already has a workflow (would overwrite its settings)")
+            else:
+                if f"/product/{product_id}/workflow/{int(replace_from)}" not in text:
+                    problems.append(f"product's current workflow is not {replace_from}")
+                saved = [(i, v) for i, v in re.findall(r'class="form-control customField" data-id="(\d+)" value="([^"]*)"', text) if v.strip()]
+                if saved:
+                    problems.append(f"product has saved custom-field values that would be lost: {saved}")
+        elif replace_from is not None:
+            problems.append("product has no workflow; replace_from must not be given")
         self.log(action, "form_check", page=page, ok=not problems, problems=problems)
         if problems:
             raise FormChanged("; ".join(problems))
@@ -544,7 +555,8 @@ class WebWriter:
             self.log(action, "failed", status=response.status_code, location=location)
             raise WriteError(f"workflow/from-template answered HTTP {response.status_code} -> {location}")
         _, text = self._get_page(page)
-        assigned = f"/product/{product_id}/workflow/" in text and 'id="templatePickerEmptyWorkflow"' not in text
+        assigned = (f"/product/{product_id}/workflow/{template_id}" in text
+                    and 'id="templatePickerEmptyWorkflow"' not in text)
         fields = sorted({int(i) for i in re.findall(r'class="form-control customField" data-id="(\d+)"', text)})
         self.log(action, "verified" if assigned else "unverified", custom_field_ids=fields)
         return {"sent": True, "status": response.status_code, "location": location,
