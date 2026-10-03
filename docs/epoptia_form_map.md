@@ -240,3 +240,21 @@
 - Πραγματική χρήση: **#624 ΒΧΜ 70: 41 (ΑΚΥΡΟ) → 39 v.2**.
 - Γραμμή 3171 (τρέχει): το βήμα LASER «ΤΖΑΜΙΑ ΜΟΝΤΑΖ» → ΜΟΝΤΑΖ ΤΖΑΜΙΑ (ίδια ετικέτα), μόνο στη ροή της.
   Τα 11 ολοκληρωμένα βήματα ανέγγιχτα. Οι 39 και 41 ανέγγιχτες.
+
+## Ειδικά πεδία (custom fields) και checkboxes ανά βήμα (2026-10-03)
+- Λίστα: `GET /customfields?per_page=100&cf_type=all&term=<όνομα>` → `<div class="deleteCustomfieldInfo">` JSON ανά πεδίο.
+- Νέο πεδίο: φόρμα `#customFieldForm` (το action το βάζει το script: `/customfields/store`), πεδία
+  `name, name_second, category (characteristics|procedures|controls), code, group, type
+  (text|dropdown|checkbox|limit|value_equal|equation|bom), is_active, edit_rule, …`. Τα checkboxes της SARIDIS
+  είναι `type=checkbox`, `category=procedures`. Εργαλείο: `WorkflowWriter.create_custom_field()`.
+- Διαγραφή: `#customfieldDeleteForm` → `POST /customfields/destroy/{id}` (`_method=DELETE`), `delete_custom_field()`.
+- **ΔΕΝ χρησιμοποιούμε** τον «κανόνα καθολικά» (`/custom-fields/apply-rule`, `/add-field-to-workflows`):
+  βάζει το πεδίο σε ΟΛΕΣ τις γραμμές/ροές. Το πεδίο συνδέεται ανά ροή.
+- Ανά ροή και ανά βήμα: `#tmpWorkflowElementsCustomFields` = `{field:{element_id:{is_show,is_check,…}}}`.
+  `is_check=1` = ο σταθμός πρέπει να τσεκάρει το πεδίο για να κλείσει το βήμα (π.χ. LASER: ΠΑΤΟΣ ΕΞΩ κ.λπ.).
+  Αποθήκευση μέσα στο `elementCustomFields` της ροής: `{field:{mandatorycheckbeforeproduction, elements:{"ermis-<step>":{show,check}}}}`.
+  Βήμα που δεν αναφέρεται = κρυφό. Εργαλείο: `update(..., step_settings={field:{step:{"show":True,"check":True}}})`
+  (και `create(..., step_settings=…)`); `{}` για ένα βήμα = αφαίρεση από αυτό το βήμα.
+- Διόρθωση 2026-10-03: σε αποθήκευση, υπάρχον βήμα όπου ένα πεδίο ήταν κρυφό μένει κρυφό
+  (πριν γινόταν ορατό· καμία πραγματική ροή δεν επηρεάστηκε — όλες οι μέχρι τότε αποθηκεύσεις είχαν μόνο πεδία ορατά παντού).
+- Κανόνας SARIDIS: ο ψυκτικός (σταθμός 23) δεν έχει checkboxes, εκτός από το νέο «ΣΥΝΔΕΣΗ ΑΠΟΧΕΤΕΥΣΗΣ» στο βήμα ΕΓΚΑΤΑΣΤΑΣΗ ΨΥΚΤΙΚΩΝ.

@@ -252,6 +252,69 @@ class UpdateFlowTests(unittest.TestCase):
         self.assertTrue(result["verified"])
         self.assertEqual(result["shown_steps"], {"6": 4})
 
+    def test_step_settings_attach_a_checkbox_to_one_step_and_drop_a_check(self):
+        attached = html.escape(json.dumps({"26": {"1": {"is_show": 1, "is_check": 1}, "3": {"is_show": 1, "is_check": 1}}}))
+        base = wf.parse_workflow(page())
+        after_attached = html.escape(json.dumps({"26": {"1": {"is_show": 1, "is_check": 1}},
+                                                 "40": {"3": {"is_show": 1, "is_check": 1}}}))
+        session = Session({"/workflows/900": [Response(page(attached=attached)), Response(page(attached=after_attached))]},
+                          [Response(status=302, location=BASE + "/workflows/900")])
+        settings = {40: {3: {"show": True, "check": True}}, 26: {3: {}}}
+        result = self.writer(session).update(900, base, expected_current=wf.signature(base),
+                                             step_settings=settings, confirm=True)
+        sent = json.loads(session.sent[0][1]["data"]["elementCustomFields"])
+        self.assertEqual(sent["40"]["elements"], {"ermis-3": {"show": True, "check": True}})  # only that step
+        self.assertEqual(sent["40"]["mandatorycheckbeforeproduction"], False)
+        self.assertEqual(sent["26"]["elements"], {"ermis-1": {"show": True, "check": True}})  # step 3 removed
+        self.assertTrue(result["verified"])
+
+    def test_step_settings_not_saved_is_unverified(self):
+        base = wf.parse_workflow(page())
+        session = Session({"/workflows/900": [Response(page()), Response(page())]},
+                          [Response(status=302, location=BASE + "/workflows/900")])
+        result = self.writer(session).update(900, base, expected_current=wf.signature(base),
+                                             step_settings={40: {3: {"show": True, "check": True}}}, confirm=True)
+        self.assertFalse(result["verified"])
+
+    def test_step_settings_reject_unknown_step_and_hidden_check(self):
+        base = wf.parse_workflow(page())
+        for settings in ({40: {99: {"show": True}}}, {40: {3: {"check": True}}}):
+            session = Session({"/workflows/900": [Response(page())]})
+            with self.assertRaises(FormChanged):
+                self.writer(session).update(900, base, expected_current=wf.signature(base),
+                                            step_settings=settings, confirm=True)
+            self.assertEqual(session.sent, [])
+
+    def test_create_custom_field_checks_form_and_verifies(self):
+        cf_page = f"""<form id="customFieldForm" method="post">
+<input type="hidden" name="_token" value="TOKCF"><input id="method" type="hidden" name="_method" value="post" />
+<input type="text" name="name" required><input type="text" name="name_second">
+<select name="category"><option value="characteristics"></option><option value="procedures"></option></select>
+<input type="text" name="code" /><select name="group"><option value="">-</option></select>
+<select name="type"><option value="text"></option><option value="checkbox" ></option></select>
+<input name="dropDownOptions[]" type="text" value="" ><input name="limit_down" type="number" />
+<input name="limit_up" type="number" /><input name="has_equal" type="checkbox" />
+<input name="equationField" type="text"><input id="equation_set_value" type="checkbox" >
+<select name="affected_custom_field"></select><input name="value_equal" type="text" value="" />
+<input name="is_active" type="hidden"><input name="connect_to_remote_workflows" type="checkbox">
+<input type="hidden" name="edit_rule" /></form>
+<script>$("#customFieldForm").attr("action", "{BASE}/customfields/store");</script>"""
+        info = {"id": 40, "name": "ΣΥΝΔΕΣΗ ΑΠΟΧΕΤΕΥΣΗΣ", "type": "checkbox", "is_active": 1}
+        listing = '<div class="deleteCustomfieldInfo d-none">' + html.escape(json.dumps(info)) + '</div>'
+        session = Session({"/customfields": [Response(cf_page), Response(""), Response(listing)]},
+                          [Response(status=302, location=BASE + "/customfields")])
+        result = self.writer(session).create_custom_field("ΣΥΝΔΕΣΗ ΑΠΟΧΕΤΕΥΣΗΣ", confirm=True)
+        self.assertEqual(session.sent[0][0], "/customfields/store")
+        data = session.sent[0][1]["data"]
+        self.assertEqual((data["type"], data["category"], data["name"]), ("checkbox", "procedures", "ΣΥΝΔΕΣΗ ΑΠΟΧΕΤΕΥΣΗΣ"))
+        self.assertEqual(result["id"], 40)
+        self.assertTrue(result["verified"])
+        changed = cf_page.replace('<input type="hidden" name="edit_rule" />', '<input type="text" name="rule" />')
+        session = Session({"/customfields": [Response(changed)]})
+        with self.assertRaises(FormChanged):
+            self.writer(session).create_custom_field("Χ", confirm=True)
+        self.assertEqual(session.sent, [])
+
     def test_refuses_stale_base_and_files(self):
         base = wf.parse_workflow(page())
         stale = dict(wf.signature(base), links=[])

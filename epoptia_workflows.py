@@ -50,6 +50,20 @@ WORKFLOW_DELETE = FormSpec(
     "/workflows", "workflowDeleteForm", "POST", "/workflows/destroy/0",
     (("_method", "hidden", False), ("_token", "hidden", False)))
 
+CUSTOM_FIELD_FORM_FIELDS = (
+    ("_token", "hidden", False), ("_method", "hidden", False), ("name", "text", True),
+    ("name_second", "text", False), ("category", "select", False), ("code", "text", False),
+    ("group", "select", False), ("type", "select", False), ("dropDownOptions[]", "text", False),
+    ("limit_down", "number", False), ("limit_up", "number", False), ("has_equal", "checkbox", False),
+    ("equationField", "text", False), ("#equation_set_value", "checkbox", False),
+    ("affected_custom_field", "select", False), ("value_equal", "text", False),
+    ("is_active", "hidden", False), ("connect_to_remote_workflows", "checkbox", False),
+    ("edit_rule", "hidden", False))
+CUSTOM_FIELD_STORE_MARKER = re.compile(r'\$\("#customFieldForm"\)\.attr\("action", "[^"]*/customfields/store"\)')
+CUSTOM_FIELD_DELETE = FormSpec(
+    "/customfields", "customfieldDeleteForm", "POST", "/customfields/destroy/0",
+    (("_method", "hidden", False), ("_token", "hidden", False)))
+
 MODES = {"strict": (1, 0, 0), "semi": (0, 1, 0), "free": (0, 0, 1)}
 
 
@@ -108,25 +122,68 @@ SETTING_KEYS = (("is_show", "show"), ("is_check", "check"), ("editable", "editab
                 ("mandatory_editable", "mandatory-editable"), ("strict_comparison", "strict_comparison"))
 
 
-def build_custom_fields(graph, attached, flags, *, new_steps_show=True):
+def build_custom_fields(graph, attached, flags, *, new_steps_show=True, step_settings=None):
     """elementCustomFields as the editor posts it: every attached field, settings for EVERY step.
 
     Existing steps keep their saved settings; new steps get show=true (SARIDIS: every station
     sees every field). Keys are the page ids used in workflowData ("ermis-<key>").
+    `step_settings` = {field_id: {step_key: {"show": bool, "check": bool}}} overrides single steps
+    (check = the station must tick the checkbox before it can finish the step). A field named there
+    but not yet attached gets attached, shown only on the steps listed.
     """
+    step_settings = {str(cf): dict(v) for cf, v in (step_settings or {}).items()}
     out = {}
-    for cf_id, saved in attached.items():
+    for cf_id in list(attached) + [cf for cf in step_settings if cf not in attached]:
+        saved = attached.get(cf_id)
+        overrides = step_settings.get(str(cf_id), {})
         elements = {}
         for key, node in graph["nodes"].items():
-            old = saved.get(str(node.get("node_id"))) if node.get("node_id") else None
-            if old is not None:
+            old = saved.get(str(node.get("node_id"))) if saved is not None and node.get("node_id") else None
+            if key in overrides:
+                settings = {k: True for k in ("show", "check") if overrides[key].get(k)}
+            elif old is not None:
                 settings = {new: True for src, new in SETTING_KEYS if old.get(src)}
+            elif node.get("node_id"):
+                settings = {}   # saved step where the field is hidden: stays hidden
             else:
-                settings = {"show": True} if new_steps_show else {}
+                settings = {"show": True} if new_steps_show and saved is not None else {}
             if settings:
                 elements[f"ermis-{key}"] = settings
         out[str(cf_id)] = dict(mandatorycheckbeforeproduction=bool(flags.get(str(cf_id))), elements=elements)
     return out
+
+
+def step_settings_problems(graph, step_settings):
+    problems = []
+    for cf, steps in (step_settings or {}).items():
+        for key, settings in steps.items():
+            if key not in graph["nodes"]:
+                problems.append(f"field {cf}: step {key!r} is not in the workflow")
+            if settings.get("check") and not settings.get("show"):
+                problems.append(f"field {cf}: step {key!r} cannot check a hidden field")
+    return problems
+
+
+def settings_match(graph_after, attached_after, wanted, graph_sent):
+    """Saved per-step show/check equal what was asked; steps matched by (station, tag)."""
+    def ident(n):
+        return (n["workstation_id"], str(n["tag"]))
+    after_by_ident = {}
+    for n in graph_after["nodes"].values():
+        after_by_ident.setdefault(ident(n), []).append(str(n["node_id"]))
+    for cf, steps in (wanted or {}).items():
+        saved = attached_after.get(str(cf))
+        if saved is None:
+            return False
+        for key, settings in steps.items():
+            ids = after_by_ident.get(ident(graph_sent["nodes"][key]), [])
+            if len(ids) != 1:
+                return False
+            got = saved.get(ids[0]) or {}
+            if bool(got.get("is_show")) != bool(settings.get("show")) or \
+                    bool(got.get("is_check")) != bool(settings.get("check")):
+                return False
+    return True
 
 
 def signature(graph):
@@ -282,11 +339,17 @@ class WorkflowWriter:
                 found.append(record["id"])
         return found
 
-    def create(self, name, graph, *, comments="", custom_fields=(), confirm=False):
-        """New workflow template with its graph in one request (as the editor page does)."""
+    def create(self, name, graph, *, comments="", custom_fields=(), step_settings=None, confirm=False):
+        """New workflow template with its graph in one request (as the editor page does).
+
+        `custom_fields` are shown on every step; `step_settings` (see build_custom_fields) attaches
+        further fields only where listed, e.g. a checkbox the station must tick on one step."""
         action = "create_workflow"
         _clean_text(name, 150)
         validate_graph(graph)
+        problems = step_settings_problems(graph, step_settings)
+        if problems:
+            raise WriteError("; ".join(problems))
         parser, _ = self.w._get_page(WORKFLOW_CREATE.page)
         form = next((f for f in parser.all_forms
                      if self.w._same_origin_path(f.get("action")) == WORKFLOW_CREATE.action), None)
@@ -300,7 +363,7 @@ class WorkflowWriter:
         if self.find(name):
             raise WriteError(f"a workflow named {name!r} already exists")
         data = build_workflow_data(graph)
-        cf = build_custom_fields(graph, {str(c): {} for c in custom_fields}, {})
+        cf = build_custom_fields(graph, {str(c): {} for c in custom_fields}, {}, step_settings=step_settings)
         payload = {"_token": form["token"], "elementCustomFields": json.dumps(cf) if cf else "",
                    "workflowData": json.dumps(data, ensure_ascii=False), "workflowName": name,
                    "madeChangesAtWorkflow": "1", "workflowComments": comments}
@@ -319,10 +382,13 @@ class WorkflowWriter:
             _, text_after, _ = self.read(ids[0])
             after = parse_workflow(text_after)
             attached = attached_custom_fields(text_after)
+            everywhere = {str(c) for c in custom_fields}
             result["verified"] = (signature(after) == signature(graph)
-                                  and set(attached) == {str(c) for c in custom_fields}
-                                  and all(len(v) == len(after["nodes"]) and all(e.get("is_show") for e in v.values())
-                                          for v in attached.values()))
+                                  and set(attached) == everywhere | {str(c) for c in (step_settings or {})}
+                                  and all(len(attached[c]) == len(after["nodes"])
+                                          and all(e.get("is_show") for e in attached[c].values())
+                                          for c in everywhere - {str(c) for c in (step_settings or {})})
+                                  and settings_match(after, attached, step_settings, graph))
             result["after"], result["custom_fields"] = after, attached
         else:
             result["verified"] = False
@@ -330,8 +396,11 @@ class WorkflowWriter:
         return result
 
     def update(self, workflow_id, graph, *, expected_current, name=None, comments=None,
-               custom_fields="keep", confirm=False, _wol=None):
-        """Replace the graph of a workflow; `expected_current` = signature() the caller based it on."""
+               custom_fields="keep", step_settings=None, confirm=False, _wol=None):
+        """Replace the graph of a workflow; `expected_current` = signature() the caller based it on.
+
+        `step_settings` (see build_custom_fields) changes show/check of single steps or attaches a
+        field to chosen steps; everything else keeps its saved settings."""
         action = "update_workflow" if _wol is None else "update_wol_workflow"
         if _wol is None:
             parser, text, current = self.read(workflow_id)
@@ -363,11 +432,15 @@ class WorkflowWriter:
         attached = attached_custom_fields(text)
         if custom_fields not in ("keep", "empty"):
             problems.append("custom_fields must be 'keep' or 'empty'")
+        if step_settings and custom_fields != "keep":
+            problems.append("step_settings need custom_fields='keep'")
+        problems += step_settings_problems(graph, step_settings)
         self.w.log(action, "form_check", page=spec.page, ok=not problems, problems=problems)
         if problems:
             raise FormChanged("; ".join(problems))
         data = build_workflow_data(graph)
-        cf = build_custom_fields(graph, attached, mandatory_flags(text)) if custom_fields == "keep" else {}
+        cf = (build_custom_fields(graph, attached, mandatory_flags(text), step_settings=step_settings)
+              if custom_fields == "keep" else {})
         payload = {"_token": form["token"], "_method": "put", "deleteCustomFieldsFromWorkflow": "",
                    "elementFiles": "", "elementFilesFirst": "",
                    "elementCustomFields": json.dumps(cf) if cf else "",
@@ -392,9 +465,9 @@ class WorkflowWriter:
         attached_after = attached_custom_fields(text_after)
         wanted = signature(dict(graph, nodes={k: dict(v, comment=v.get("comment", ""), is_or=v.get("is_or", 0))
                                                for k, v in graph["nodes"].items()}))
-        fields_kept = set(attached_after) == set(attached)
+        fields_kept = set(attached_after) == set(attached) | {str(c) for c in (step_settings or {})}
         shown = {cf: sum(1 for e in v.values() if e.get("is_show")) for cf, v in attached_after.items()}
-        ok = signature(after) == wanted and fields_kept
+        ok = signature(after) == wanted and fields_kept and settings_match(after, attached_after, step_settings, graph)
         self.w.log(action, "verified" if ok else "unverified", workflow=workflow_id,
                    after=signature(after), custom_fields_before=sorted(attached),
                    custom_fields_after=sorted(attached_after), shown_steps=shown)
@@ -426,3 +499,64 @@ class WorkflowWriter:
         parser, _ = self.w._get_page("/workflows")
         return self.w._delete(action, WORKFLOW_DELETE, parser, f"/workflows/destroy/{int(workflow_id)}",
                               {"workflow": int(workflow_id), "name": expected_name}, confirm=confirm)
+
+    # -- custom fields ("ειδικά πεδία") -------------------------------------
+    # The /customfields page: form #customFieldForm (its action is set by the page script to
+    # /customfields/store for a new field). The page also has a GLOBAL "apply rule" (adds a field
+    # to every line/template) - deliberately not used: fields are attached per workflow instead.
+    def find_custom_fields(self, name):
+        """[(id, name, type, is_active)] with exactly this name (deleted ones are not listed)."""
+        _, text = self.w._get_page("/customfields?per_page=100&cf_type=all&term=" + quote(name))
+        found = []
+        for blob in re.findall(r'<div class="deleteCustomfieldInfo d-none">(.*?)</div>', text, re.S):
+            record = json.loads(html.unescape(blob))
+            if record.get("name") == name:
+                found.append((record["id"], record["name"], record.get("type"), record.get("is_active")))
+        return found
+
+    def create_custom_field(self, name, *, field_type="checkbox", category="procedures", confirm=False):
+        """New custom field with no global rule; attach it per workflow with step_settings."""
+        action = "create_custom_field"
+        _clean_text(name, 255)
+        if field_type not in ("checkbox", "text"):
+            raise WriteError("only checkbox/text fields are supported")
+        parser, text = self.w._get_page("/customfields")
+        spec = FormSpec("/customfields", "customFieldForm", "POST", None, CUSTOM_FIELD_FORM_FIELDS)
+        problems = [p for p in self.w._check_form(parser, spec) if not p.startswith("action ")]
+        if not CUSTOM_FIELD_STORE_MARKER.search(text):
+            problems.append("page script no longer sets the store action")
+        options = re.findall(r'<option value="([a-z_]+)"', text)
+        if field_type not in options or category not in options:
+            problems.append("type/category option missing")
+        self.w.log(action, "form_check", page=spec.page, ok=not problems, problems=problems)
+        if problems:
+            raise FormChanged("; ".join(problems))
+        if self.find_custom_fields(name):
+            raise WriteError(f"a custom field named {name!r} already exists")
+        form = parser.forms["customFieldForm"]
+        payload = {"_token": form["token"], "_method": "post", "name": name, "name_second": "",
+                   "category": category, "code": "", "group": "", "type": field_type,
+                   "is_active": "on", "edit_rule": ""}
+        preview = {"method": "POST", "path": "/customfields/store", "payload": _redact(payload)}
+        if not confirm:
+            self.w.log(action, "preview", **preview)
+            return {"sent": False, **preview}
+        response, _ = self.w._send(action, "/customfields/store", form=payload)
+        location = self.w._same_origin_path(response.headers.get("Location"))
+        if response.status_code not in (200, 302) or location == "/login":
+            raise WriteError(f"/customfields/store answered HTTP {response.status_code}")
+        found = self.find_custom_fields(name)
+        ok = len(found) == 1 and found[0][2] == field_type and bool(found[0][3])
+        self.w.log(action, "verified" if ok else "unverified", found=found)
+        return {"sent": True, "verified": ok, "id": found[0][0] if len(found) == 1 else None, "found": found}
+
+    def delete_custom_field(self, field_id, expected_name, *, confirm=False):
+        if (int(field_id), expected_name) not in [(f[0], f[1]) for f in self.find_custom_fields(expected_name)]:
+            raise WriteError(f"custom field {field_id} named {expected_name!r} not found")
+        parser, _ = self.w._get_page("/customfields")
+        result = self.w._delete("delete_custom_field", CUSTOM_FIELD_DELETE, parser,
+                                f"/customfields/destroy/{int(field_id)}",
+                                {"custom_field": int(field_id), "name": expected_name}, confirm=confirm)
+        if result["sent"]:
+            result["verified"] = not any(f[0] == int(field_id) for f in self.find_custom_fields(expected_name))
+        return result
