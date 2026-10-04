@@ -387,6 +387,16 @@ class UpdateFlowTests(unittest.TestCase):
         self.assertNotIn("tracking_info", data)
         self.assertEqual((result["id"], result["verified"]), (32, True))
 
+    def test_check_rule_fixes(self):
+        graph = wf.parse_workflow(page(elements=[element(1, 2, "LASER", "ΚΟΠΗ", 24, 0), element(2, 2, "LASER", "ΠΑΡΕΛΚΟΜΕΝΑ", 22, 120),
+                                                  element(3, 23, "ΨΥΚΤΙΚΑ", "ΕΓΚΑΤΑΣΤΑΣΗ ΨΥΚΤΙΚΩΝ", 14, 240)]))
+        attached = {"6": {"1": {"is_show": 1, "is_check": 1}, "2": {"is_show": 1}},
+                    "13": {"1": {"is_show": 1, "is_check": 1}, "2": {"is_show": 1, "is_check": 1}},
+                    "39": {"3": {"is_show": 1, "is_check": 1}, "2": {"is_show": 1, "is_check": 1}}}
+        fixes, notes = wf.check_rule_fixes(graph, attached)
+        self.assertEqual(fixes, {6: {1: {"show": True}}, 13: {2: {}}, 39: {2: {}}})
+        self.assertEqual(len(notes), 3)
+
     def test_refuses_stale_base_and_files(self):
         base = wf.parse_workflow(page())
         stale = dict(wf.signature(base), links=[])

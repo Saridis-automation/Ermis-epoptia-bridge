@@ -213,6 +213,42 @@ def settings_match(graph_after, attached_after, wanted, graph_sent):
     return True
 
 
+# SARIDIS rule (user, 2026-10-04): mandatory checks exist ONLY on LASER|ΚΟΠΗ (checkbox fields) and the
+# drain checkbox on ΨΥΚΤΙΚΑ|ΕΓΚΑΤΑΣΤΑΣΗ ΨΥΚΤΙΚΩΝ; text fields are shown, never checked. The Epoptia editor
+# adds checkboxes/checks by itself to steps a user adds, so audit after every manual edit.
+TEXT_FIELD_MAX_ID = 12
+DRAIN_FIELD_ID = 39
+LASER_ID, FRIDGE_ID, DRAIN_STEP_TAG = 2, 23, "ΕΓΚΑΤΑΣΤΑΣΗ ΨΥΚΤΙΚΩΝ"
+
+
+def check_rule_fixes(graph, attached):
+    """step_settings that bring a workflow back to the SARIDIS checkbox rule, plus readable notes."""
+    fixes, notes = {}, []
+    for key, node in graph["nodes"].items():
+        element = str(node.get("node_id"))
+        for cf, steps in attached.items():
+            saved = steps.get(element) or {}
+            if not (saved.get("is_show") or saved.get("is_check")):
+                continue
+            where = f"{node.get('workstation')}|{node.get('tag')}"
+            if int(cf) <= TEXT_FIELD_MAX_ID:
+                if any(saved.get(k) for k in ("is_check", "editable", "mandatory_editable", "strict_comparison")):
+                    fixes.setdefault(int(cf), {})[key] = {"show": True}
+                    notes.append(f"field {cf}: check removed at {where}")
+                continue
+            if int(cf) == DRAIN_FIELD_ID:
+                allowed = node["workstation_id"] == FRIDGE_ID and node.get("tag") == DRAIN_STEP_TAG
+            else:
+                allowed = node["workstation_id"] == LASER_ID and node.get("tag") == "ΚΟΠΗ"
+            if not allowed:
+                fixes.setdefault(int(cf), {})[key] = {}
+                notes.append(f"checkbox {cf} removed from {where}")
+            elif not saved.get("is_check"):
+                fixes.setdefault(int(cf), {})[key] = {"show": True, "check": True}
+                notes.append(f"checkbox {cf} made mandatory at {where}")
+    return fixes, notes
+
+
 def signature(graph):
     """Comparable shape: steps (station, tag, mode) and links between them, ignoring ids/positions."""
     nodes = graph["nodes"]
@@ -764,3 +800,13 @@ class WorkflowWriter:
               and not found[0].get("grouped") and found[0].get("is_active") == 1)
         self.w.log(action, "verified" if ok else "unverified", found=[r["id"] for r in found])
         return {"sent": True, "verified": ok, "id": found[0]["id"] if len(found) == 1 else None}
+
+    def enforce_check_rule(self, workflow_id, *, confirm=False):
+        """Audit one workflow against the checkbox rule; with confirm, fix it (verified)."""
+        _, text, graph = self.read(workflow_id)
+        fixes, notes = check_rule_fixes(graph, attached_custom_fields(text))
+        if not fixes or not confirm:
+            return {"sent": False, "notes": notes, "ok": not fixes}
+        result = self.update(workflow_id, graph, expected_current=signature(graph), step_settings=fixes, confirm=True)
+        return {"sent": True, "notes": notes, "ok": result["verified"]}
+
