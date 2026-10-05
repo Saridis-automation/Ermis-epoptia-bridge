@@ -104,7 +104,7 @@ class LoadTests(unittest.TestCase):
         self.assertLess(load("2026-11-30"), 100)          # same 60 in ~40 workdays
 
     def test_overdue_work_is_judged_against_the_minimum_window(self):
-        # 10 overdue normal products at ΜΟΝΤΑΖ 1 (4.55 weighted/day): one day would read 220%.
+        # 10 overdue normal products at ΜΟΝΤΑΖ 1: a one-day window would read 5x higher.
         lines = [line(i, "2026-09-01", [("ΜΟΝΤΑΖ 1", False)]) for i in range(1, 11)]
         report = m.compute(lines, date(2026, 10, 5))["stations"]["ΜΟΝΤΑΖ 1"]
         capacity = m.CAPACITY_PER_DAY["ΜΟΝΤΑΖ 1"] * m.MIN_WINDOW_WORKDAYS
