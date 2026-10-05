@@ -40,7 +40,8 @@ class ShiftTests(unittest.TestCase):
 
     def test_evening_counts_less_than_morning(self):
         from datetime import datetime
-        lines = [line(i, "2026-10-07", [("ΜΟΝΤΑΖ 1", False)]) for i in range(1, 11)]
+        # Deadline beyond the minimum window, so the shift share still matters.
+        lines = [line(i, "2026-10-14", [("ΜΟΝΤΑΖ 1", False)]) for i in range(1, 11)]
         morning = m.compute(lines, datetime(2026, 10, 2, 7, 0))["stations"]["ΜΟΝΤΑΖ 1"]["load_percent"]
         evening = m.compute(lines, datetime(2026, 10, 2, 20, 0))["stations"]["ΜΟΝΤΑΖ 1"]["load_percent"]
         self.assertGreater(evening, morning)
@@ -101,6 +102,16 @@ class LoadTests(unittest.TestCase):
             return m.compute(lines, today)["stations"]["ΜΟΝΤΑΖ 1"]["load_percent"]
         self.assertGreater(load("2026-10-16"), 100)       # 60 products in ~9 workdays
         self.assertLess(load("2026-11-30"), 100)          # same 60 in ~40 workdays
+
+    def test_overdue_work_is_judged_against_the_minimum_window(self):
+        # 10 overdue normal products at ΜΟΝΤΑΖ 1 (4.55 weighted/day): one day would read 220%.
+        lines = [line(i, "2026-09-01", [("ΜΟΝΤΑΖ 1", False)]) for i in range(1, 11)]
+        report = m.compute(lines, date(2026, 10, 5))["stations"]["ΜΟΝΤΑΖ 1"]
+        capacity = m.CAPACITY_PER_DAY["ΜΟΝΤΑΖ 1"] * m.MIN_WINDOW_WORKDAYS
+        self.assertEqual(m.MIN_WINDOW_WORKDAYS, 5.0)
+        self.assertEqual(report["load_percent"], round(10 / capacity * 100))
+        self.assertEqual(report["tightest"]["workdays"], 5.0)
+        self.assertEqual(report["overdue_products"], 10)
 
     def test_downstream_station_pulls_upstream_deadline_earlier(self):
         jobs, _ = m.build_jobs([line(1, "2026-11-30", [("LASER", False), ("ΜΟΝΤΑΖ ΤΖΑΜΙΑ", False)])])

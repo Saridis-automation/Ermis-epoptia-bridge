@@ -10,7 +10,8 @@ Model agreed with the user on 2026-10-01 (docs/dashboard_load_model.md):
   delivery date through the stations that follow it, as late as each
   downstream station's capacity allows (so its queue is included);
 - load = worst ratio over due dates of (weight due by d) / (capacity x working
-  days from today to d). Overdue work counts as due today.
+  days from today to d), with at least MIN_WINDOW_WORKDAYS in the denominator so
+  overdue and near-due work is judged against a week of capacity, not one day.
 
 Pure functions over Epoptia work-order-line records (API / backup format).
 `python -m dashboard.load_model` prints a report from the nightly backup.
@@ -41,6 +42,8 @@ ACTIVE_STATUSES = ("production", "standby")
 PRODUCTION_STATIONS = set(PRODUCTS_PER_DAY) | {"PUNCHING"}
 LARGE_LENGTH_CM = 250
 SHIFT_START, SHIFT_END = (7, 30), (16, 0)      # user, 2026-10-02: shift 07:30-16:00
+# user, 2026-10-05: a one-day window made a few overdue products read 200-350%.
+MIN_WINDOW_WORKDAYS = 5.0
 
 
 # -- calendar -----------------------------------------------------------------
@@ -337,7 +340,7 @@ def station_load(jobs, today):
         worst, cumulative = None, 0.0
         for job in mine:
             cumulative += job["work"][station]
-            available = max(1.0, job["due_index"][station] - now)      # overdue -> due today
+            available = max(MIN_WINDOW_WORKDAYS, job["due_index"][station] - now)
             ratio = cumulative / (capacity * available)
             if worst is None or ratio > worst["ratio"]:
                 # needed/fits in the user's unit (typical products of this station)
