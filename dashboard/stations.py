@@ -123,7 +123,7 @@ def attach_load_model(result, rows, valid, today=None):
             if today is None:
                 from datetime import datetime
                 from zoneinfo import ZoneInfo
-                today = datetime.now(ZoneInfo('Europe/Athens')).date()
+                today = datetime.now(ZoneInfo('Europe/Athens')).replace(tzinfo=None)
             model = compute(rows, today)['stations']
         except Exception:
             model = None

@@ -40,6 +40,7 @@ ACTIVE_STATUSES = ("production", "standby")
 # Production stations for counting products (PUNCHING included: it is still real work).
 PRODUCTION_STATIONS = set(PRODUCTS_PER_DAY) | {"PUNCHING"}
 LARGE_LENGTH_CM = 250
+SHIFT_START, SHIFT_END = (7, 30), (16, 0)      # user, 2026-10-02: shift 07:30-16:00
 
 
 # -- calendar -----------------------------------------------------------------
@@ -316,8 +317,19 @@ def backward_schedule(jobs):
     return jobs
 
 
+def remaining_share_of_today(moment):
+    """Share of today's shift still ahead (1 before 07:30, 0 after 16:00 or on a non-workday)."""
+    if not hasattr(moment, "hour") or not is_workday(moment.date()):
+        return 1.0 if not hasattr(moment, "hour") and is_workday(moment) else 0.0
+    start = moment.replace(hour=SHIFT_START[0], minute=SHIFT_START[1], second=0, microsecond=0)
+    end = moment.replace(hour=SHIFT_END[0], minute=SHIFT_END[1], second=0, microsecond=0)
+    return max(0.0, min(1.0, (end - moment).total_seconds() / (end - start).total_seconds()))
+
+
 def station_load(jobs, today):
-    now = workday_end(today) - (1.0 if is_workday(today) else 0.0)   # start of today's work
+    """`today` is a local date (whole day counts) or a local datetime (rest of shift counts)."""
+    day = today.date() if hasattr(today, "hour") else today
+    now = workday_end(day) - remaining_share_of_today(today)          # start of the remaining work
     report = {}
     for station, capacity in CAPACITY_PER_DAY.items():
         mine = sorted((j for j in jobs if station in j.get("due_index", {})),
@@ -346,7 +358,8 @@ def station_load(jobs, today):
 def compute(lines, today):
     jobs, skipped = build_jobs(lines)
     backward_schedule(jobs)
-    return dict(today=today.isoformat(), stations=station_load(jobs, today),
+    return dict(today=(today.date() if hasattr(today, "hour") else today).isoformat(),
+                stations=station_load(jobs, today),
                 jobs=len(jobs), skipped=skipped,
                 sizes={k: sum(j["size"] == k for j in jobs) for k in WEIGHTS})
 

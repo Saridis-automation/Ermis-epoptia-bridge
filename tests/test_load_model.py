@@ -29,6 +29,23 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual(m.workdays_between(date(2026, 10, 26), date(2026, 11, 1)), 4)
 
 
+class ShiftTests(unittest.TestCase):
+    def test_remaining_share_of_shift(self):
+        from datetime import datetime
+        self.assertEqual(m.remaining_share_of_today(datetime(2026, 10, 2, 6, 0)), 1.0)
+        self.assertAlmostEqual(m.remaining_share_of_today(datetime(2026, 10, 2, 11, 45)), 0.5)
+        self.assertEqual(m.remaining_share_of_today(datetime(2026, 10, 2, 17, 0)), 0.0)
+        self.assertEqual(m.remaining_share_of_today(datetime(2026, 10, 3, 10, 0)), 0.0)   # Saturday
+        self.assertEqual(m.remaining_share_of_today(date(2026, 10, 2)), 1.0)
+
+    def test_evening_counts_less_than_morning(self):
+        from datetime import datetime
+        lines = [line(i, "2026-10-07", [("ΜΟΝΤΑΖ 1", False)]) for i in range(1, 11)]
+        morning = m.compute(lines, datetime(2026, 10, 2, 7, 0))["stations"]["ΜΟΝΤΑΖ 1"]["load_percent"]
+        evening = m.compute(lines, datetime(2026, 10, 2, 20, 0))["stations"]["ΜΟΝΤΑΖ 1"]["load_percent"]
+        self.assertGreater(evening, morning)
+
+
 class SizeAndWeightTests(unittest.TestCase):
     def test_size_rules(self):
         self.assertEqual(m.size_class(line(1, "2026-11-01", [], "Ψυγείο βιτρίνα συντήρησης BXM72"))[0], "large")
